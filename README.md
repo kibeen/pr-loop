@@ -1,4 +1,39 @@
-# kibeen-skills 플러그인
+# pr-loop
 
-설치하면 `.claude-plugin/plugin.json` 의 `dependencies` 에 적힌 kibeen 기본 도구가 함께 설치된다.
-지울 때는 `claude plugin uninstall kibeen-skills@kibeen-skills --prune` 으로 함께 설치된 도구까지 정리한다.
+구현 PR 을 draft 리뷰부터 머지까지 끌고 가는 Claude Code 플러그인이다. 코드를 바꾼 PR 은 크기와 관계없이
+독립 리뷰, CI, 필요한 평가를 거친 뒤에만 사용자에게 채택을 묻고, 채택된 PR 은 머지될 때까지 맡는다.
+
+## 설치
+[kibeen-skills](https://github.com/kibeen/kibeen-skills) 마켓플레이스가 이 레포를 가리킨다.
+```
+claude plugin marketplace add kibeen/kibeen-skills
+claude plugin install pr-loop@kibeen-skills
+```
+`gh` CLI 와 Node.js 18 이상이 필요하다. `plugin.json` 에 `version` 을 적지 않으므로 커밋 SHA 가 버전이고,
+이 레포에 푸시하면 `claude plugin update pr-loop@kibeen-skills` 로 받는다.
+
+## 구성
+| 구성 | 종류 | 하는 일 |
+|---|---|---|
+| `pr-review-loop` | 스킬 | draft PR 을 만들고 리뷰 서브에이전트의 리뷰와 반영을 self-approve 까지 반복한다(최대 3회). 그 뒤 CI 통과까지의 수정과 PoC 평가를 함께 진행하고, 결과를 공유하며 채택 여부를 묻는다. CI 수정이 평가한 동작을 바꾸면 평가를 중단하고 재리뷰 뒤 다시 잰다 |
+| `pr-merge-loop` | 스킬 | 사용자가 채택한 PR 을 열고(ready) auto-merge 를 켠 뒤, 필수 CI 실패와 리뷰어 코멘트를 처리해 머지될 때까지 감시한다. 리뷰 요청을 반영하지 않겠다는 답글만 문안을 사용자에게 보여 승인받은 뒤 올린다 |
+| `pr-reviewer` | 서브에이전트 | `pr-review-loop` 의 독립 리뷰어. 코드 결함과 평가 계획을 보고 PR 코멘트로 VERDICT 를 남긴다. 코드를 고치지 않는다 |
+| `pr-merge-watch.mjs` | 스킬 스크립트 | `pr-merge-loop` 의 감시 도구(읽기 전용). `status` 는 PR 상태를 한 번 읽고, `wait` 는 할 일이 생길 때까지 기다린다(필수 체크 실패, 새 리뷰 코멘트, base 와 충돌, 머지 완료) |
+
+두 스킬은 진행 상태를 PR 코멘트의 표시(`<!-- pr-review-loop step=... -->`)로 남긴다. 세션이 바뀌어도 그 표시를 읽어 이어 간다.
+
+## 레이아웃
+```
+.claude-plugin/plugin.json
+skills/pr-review-loop/SKILL.md
+skills/pr-merge-loop/SKILL.md
+skills/pr-merge-loop/scripts/pr-merge-watch.mjs
+agents/pr-reviewer.md
+tests/pr-merge-watch.test.mjs
+```
+
+## 테스트
+```
+node --test tests/
+```
+네트워크와 `gh` 없이 돈다. 스킬 본문을 고칠 때는 서브에이전트에게 시나리오를 풀게 해 절차대로 따라가는지 확인하고, 독립 리뷰를 거친다.

@@ -1,13 +1,16 @@
 {
-  "name": "kibeen-skills",
-  "description": "kibeen 기본 도구 묶음. 설치하면 dependencies 의 플러그인이 함께 설치된다.",
+  "name": "pr-loop",
+  "description": "구현 PR 을 draft 리뷰부터 머지까지 끌고 가는 절차. 스킬 pr-review-loop, pr-merge-loop 와 리뷰 서브에이전트 pr-reviewer.",
   "author": {
     "name": "Jung Kibeen"
   },
-  "dependencies": [
-    "playwright@claude-plugins-official",
-    "superpowers@claude-plugins-official",
-    "taste-skill@taste-skill",
-    "doc-coauthoring@kibeen-skills"
+  "homepage": "https://github.com/kibeen/pr-loop",
+  "repository": "https://github.com/kibeen/pr-loop",
+  "keywords": [
+    "pull-request",
+    "code-review",
+    "ci",
+    "merge",
+    "workflows"
   ]
 }
