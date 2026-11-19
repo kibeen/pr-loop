@@ -34,6 +34,6 @@ tests/pr-merge-watch.test.mjs
 
 ## 테스트
 ```
-node --test tests/
+node --test tests/*.test.mjs
 ```
 네트워크와 `gh` 없이 돈다. 스킬 본문을 고칠 때는 서브에이전트에게 시나리오를 풀게 해 절차대로 따라가는지 확인하고, 독립 리뷰를 거친다.
