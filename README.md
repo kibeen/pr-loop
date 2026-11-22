@@ -15,7 +15,7 @@ claude plugin install pr-loop@kibeen-skills
 ## 구성
 | 구성 | 종류 | 하는 일 |
 |---|---|---|
-| `pr-review-loop` | 스킬 | draft PR 을 만들고 리뷰 서브에이전트의 리뷰와 반영을 self-approve 까지 반복한다(최대 3회). 그 뒤 CI 통과까지의 수정과 PoC 평가를 함께 진행하고, 결과를 공유하며 채택 여부를 묻는다. CI 수정이 평가한 동작을 바꾸면 평가를 중단하고 재리뷰 뒤 다시 잰다 |
+| `pr-review-loop` | 스킬 | draft PR 을 만들고 리뷰 서브에이전트의 리뷰와 반영을 self-approve 까지 반복한다(최대 7회). 그 뒤 CI 통과까지의 수정과 PoC 평가를 함께 진행하고, 결과를 공유하며 채택 여부를 묻는다. CI 수정이 평가한 동작을 바꾸면 평가를 중단하고 재리뷰 뒤 다시 잰다 |
 | `pr-merge-loop` | 스킬 | 사용자가 채택한 PR 을 열고(ready) auto-merge 를 켠 뒤, 필수 CI 실패와 리뷰어 코멘트를 처리해 머지될 때까지 감시한다. 리뷰 요청을 반영하지 않겠다는 답글만 문안을 사용자에게 보여 승인받은 뒤 올린다 |
 | `pr-reviewer` | 서브에이전트 | `pr-review-loop` 의 독립 리뷰어. 코드 결함과 평가 계획을 보고 PR 코멘트로 VERDICT 를 남긴다. 코드를 고치지 않는다 |
 | `pr-merge-watch.mjs` | 스킬 스크립트 | `pr-merge-loop` 의 감시 도구(읽기 전용). `status` 는 PR 상태를 한 번 읽고, `wait` 는 할 일이 생길 때까지 기다린다(필수 체크 실패, 새 리뷰 코멘트, base 와 충돌, 머지 완료) |
