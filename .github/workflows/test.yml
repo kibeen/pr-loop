@@ -17,11 +17,16 @@ jobs:
     # The floor is run, not just declared: a watcher that needs a newer Python than the
     # README promises would otherwise only break on the machine that has the older one.
     # "3.x" catches the opposite drift, code that only works on the old floor.
+    #
+    # 3.11 is kibeen-skills' floor too, so the marketplace asks for one version, not two.
+    # It is not the oldest Python the code runs on - 3.9 passed on the Windows runner - but
+    # a floor no runner can install is a floor nothing tests: actions/python-versions has
+    # dropped 3.9 for Ubuntu 26.04 since it went end-of-life.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.x"]
+        python-version: ["3.11", "3.x"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     defaults:

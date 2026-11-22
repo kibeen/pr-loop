@@ -18,7 +18,7 @@ the PR merged, ...) and then prints the same snapshot with `event` set. It never
 changes the pull request: every push, comment and merge stays an explicit command
 of the agent. All state lives in the PR itself, so a new session can run it again.
 
-Standard library only, no Node.js. Needs `gh` on PATH and Python 3.9 or newer.
+Standard library only, no Node.js. Needs `gh` on PATH and Python 3.11 or newer.
 """
 from __future__ import annotations
 

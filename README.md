@@ -9,7 +9,7 @@
 claude plugin marketplace add kibeen/kibeen-skills
 claude plugin install pr-loop@kibeen-skills
 ```
-`gh` CLI 와 Python 3.9+ 가 필요하다(표준 라이브러리만 쓴다). Node.js 는 필요 없다. `plugin.json` 에 `version` 을 적지 않으므로 커밋 SHA 가 버전이고,
+`gh` CLI 와 Python 3.11+ 가 필요하다(표준 라이브러리만 쓴다). Node.js 는 필요 없다. `plugin.json` 에 `version` 을 적지 않으므로 커밋 SHA 가 버전이고,
 이 레포에 푸시하면 `claude plugin update pr-loop@kibeen-skills` 로 받는다.
 
 ## 구성
