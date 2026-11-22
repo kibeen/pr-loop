@@ -8,12 +8,50 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The floor is run, not just declared: a watcher that needs a newer Python than the
+    # README promises would otherwise only break on the machine that has the older one.
+    # "3.x" catches the opposite drift, code that only works on the old floor.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.x"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-      - run: node --test tests/*.test.mjs
+          python-version: ${{ matrix.python-version }}
+      - name: Check the suite is collected
+        # discover exits 0 when it finds nothing, so a suite that moved out of the
+        # search path would leave CI green with nothing run.
+        run: >
+          python -c "import unittest, sys;
+          n = unittest.defaultTestLoader.discover('tests').countTestCases();
+          print('collected', n, 'tests');
+          sys.exit(0 if n else 'discover collected no tests: the suite is not where CI looks')"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  tests-passed:
+    # One stable name to require on the branch: the matrix names carry the Python version,
+    # and a skipped matrix (a failed earlier job) counts as a passing required check.
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded
+        run: |
+          echo "test=${{ needs.test.result }}"
+          test "${{ needs.test.result }}" = "success"

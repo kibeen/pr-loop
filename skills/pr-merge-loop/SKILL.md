@@ -19,12 +19,13 @@ PR 이 `MERGED` 가 되면 끝난다.
 리뷰어 답글에는 확인한 사실과 한 일만 쓴다. 사용자가 정할 것(범위, 설계, 일정)을 대신 약속하지 않는다.
 
 ## 상태 읽기와 기록
-상태는 감시 스크립트로 읽는다(이 스킬 폴더의 `scripts/pr-merge-watch.mjs`, PR 을 바꾸지 않는다).
+상태는 감시 스크립트로 읽는다(이 스킬 폴더의 `scripts/pr_merge_watch.py`, PR 을 바꾸지 않는다).
 아래에서 `필드.이름` 은 이 출력의 JSON 필드다. `hint` 는 지금 상태를 한 줄로 요약한다.
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/pr-merge-watch.mjs" status <PR> [--repo owner/name]   # 지금 상태 한 번
-node "${CLAUDE_SKILL_DIR}/scripts/pr-merge-watch.mjs" wait <PR> [--repo owner/name]     # 내가 할 일이 생길 때까지 기다림
+python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" status <PR> [--repo owner/name]   # 지금 상태 한 번
+python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" wait <PR> [--repo owner/name]     # 내가 할 일이 생길 때까지 기다림
 ```
+`python` 이 없는 환경에서는 `python3` 로 바꿔 실행한다. 표준 라이브러리만 쓰므로 설치할 것은 없다.
 
 진행 상태는 PR 코멘트 첫 줄의 표시로 남긴다(pr-review-loop 과 같은 형식). `round` 는 그 step 의 순번이고 `markers.next.<step>` 값을 쓴다.
 `sha` 는 코멘트를 올리는 시점의 head 다.
