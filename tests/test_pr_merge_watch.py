@@ -1214,6 +1214,26 @@ class CommandTest(unittest.TestCase):
 class PortabilityTest(unittest.TestCase):
     """The watcher used to need Node.js. Nothing here may quietly bring a runtime back."""
 
+    def test_running_the_suite_leaves_no_tracked_debris(self):
+        """The first push of this port committed two .pyc files.
+
+        Importing the watcher writes bytecode next to it, so the repository has to
+        ignore it; otherwise the next `git add -A` carries build output into a commit.
+        """
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split(chr(0))
+        debris = sorted(p for p in tracked if p.endswith((".pyc", ".pyo")) or "__pycache__" in p)
+        self.assertEqual(debris, [], "bytecode is tracked: %s" % debris)
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("__pycache__", ignored)
+        # the suite just imported the watcher, so bytecode exists; none of it may be
+        # untracked-and-unignored, which is how it got committed in the first place
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8").split(chr(10))
+        loose = [l for l in dirty if l.startswith("??") and (".pyc" in l or "__pycache__" in l)]
+        self.assertEqual(loose, [], "bytecode is neither tracked nor ignored: %s" % loose)
     def test_no_node_scripts_are_left_in_the_skills(self):
         strays = sorted(
             str(p.relative_to(ROOT)) for p in ROOT.rglob("*.mjs") if ".git" not in p.parts
