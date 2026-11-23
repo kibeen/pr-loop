@@ -172,7 +172,10 @@ def ensure_floor(argv, running=None, probe=None, spawn=None):
             env = dict(os.environ)
             env[_REEXEC] = "1"
             r = spawn(_resolve(candidate) + [os.path.abspath(__file__)] + list(argv), env=env)
-            return ("exit", r.returncode)
+            code = r.returncode
+            # A POSIX child killed by a signal reports -N; an exit status has to be
+            # 0-255, so pass on the shell's convention instead of a negative number.
+            return ("exit", 128 - code if code < 0 else code)
         best = max(best, got)
     return ("hint", shortfall_hint(best))
 
@@ -1117,7 +1120,10 @@ def graphql(query, variables):
     pull = ((res.get("data") or {}).get("repository") or {}).get("pullRequest")
     if not pull:
         errors = res.get("errors")
-        if errors:
+        # `is not None`, not falsiness: JS read an empty errors array as truthy, so a
+        # response carrying `"errors": []` stayed a retryable blip. Reading it as "no
+        # errors" here would fall through to the message branch and end the watch.
+        if errors is not None:
             msg = "; ".join(e.get("message") or "" for e in errors)
             gone = any(e.get("type") == "NOT_FOUND" for e in errors)
         else:

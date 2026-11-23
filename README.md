@@ -11,7 +11,7 @@ claude plugin install pr-loop@kibeen-skills
 ```
 `gh` CLI 와 Python 3.11+ 가 필요하다(표준 라이브러리만 쓴다). Node.js 는 필요 없다.
 하한의 단일 출처는 `pr_merge_watch.py` 의 `MIN_PYTHON` 이고, 이 README 와 CI 워크플로가 그것과 다른 버전을 말하면 테스트가 실패한다.
-돌고 있는 파이썬이 하한보다 낮으면 스크립트가 더 새 인터프리터를 스스로 찾아(`python3.14`…`python3.11`, `py -3`)
+돌고 있는 파이썬이 하한보다 낮으면 스크립트가 더 새 인터프리터를 스스로 찾아(`python3.14`…`python3.11`, `python3`, `python`, `py -3`)
 같은 명령을 넘긴다. 머신에 하나도 없으면 설치 명령을 한 줄로 알려 준다(Windows `winget`, macOS `brew`,
 Linux 는 패키지 관리자 감지) — 설치는 직접 하지 않는다. 런타임 설치는 시스템 변경이기 때문이다. `plugin.json` 에 `version` 을 적지 않으므로 커밋 SHA 가 버전이고,
 이 레포에 푸시하면 `claude plugin update pr-loop@kibeen-skills` 로 받는다.

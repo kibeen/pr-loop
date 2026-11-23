@@ -1203,6 +1203,19 @@ class CommandTest(unittest.TestCase):
             ["a1b2c3d", "ci", 2, 2],
         )
 
+    def test_an_empty_errors_array_is_a_blip_not_a_dead_watch(self):
+        """JS read `errors: []` as truthy, so it stayed retryable; `if errors:` made it
+        fatal and ended a watch that should have polled again."""
+        blip = {"data": {"repository": {"pullRequest": None}}, "errors": []}
+        merged = gql({"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z",
+                      "mergeCommit": {"oid": "f" * 40}})
+        status, out, err, fake, text = run_watcher(
+            ["wait", "412", "--repo", "acme/engine", "--interval", "1"], [blip, merged]
+        )
+        self.assertEqual(status, 0, text)
+        self.assertEqual([out["event"], fake.calls], ["merged", 2])
+        self.assertRegex(err, r"gh 호출 실패 \(1/10\)")
+
     def test_a_missing_pr_and_bad_arguments_end_with_an_error_instead_of_a_retry_loop(self):
         status, out, _, fake, _ = run_watcher(
             ["wait", "999", "--repo", "acme/engine"],
@@ -1448,6 +1461,59 @@ class PythonFloorTest(unittest.TestCase):
             w.shutil = saved
         self.assertEqual(outcome, ("exit", 0))
         self.assertEqual(spawned["argv"][0], shim)
+
+    def test_the_probe_resolves_through_pathext_too(self):
+        """The half of that fix no test reached.
+
+        The handover test injects `probe`, so it cannot see what _probe does - and
+        _probe is the side that decides the defect: a python.bat shim that fails to
+        start probes as None, and the machine is told to install a Python it already
+        has. Claiming a revert of this line failed a test was wrong; nothing covered it.
+        """
+        shim = "C:\\pyenv\\shims\\python.bat"
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return _Shim(returncode=0, stdout=b"3.13", stderr=b"")
+
+        saved = (w.shutil, w.subprocess)
+        w.shutil = _Shim(which=lambda name: shim if name == "python" else None)
+        w.subprocess = _Shim(
+            run=run, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+            SubprocessError=subprocess.SubprocessError,
+        )
+        try:
+            got = w._probe(["python"])
+        finally:
+            w.shutil, w.subprocess = saved
+        self.assertEqual(got, (3, 13))
+        self.assertEqual(calls[0][0], shim, "the probe ran the bare name, not the shim")
+
+    def test_a_probe_that_cannot_run_is_not_a_version(self):
+        saved = (w.shutil, w.subprocess)
+        w.shutil = _Shim(which=lambda name: None)
+
+        def run(argv, **kwargs):
+            raise OSError("[WinError 2] cannot find python3.99")
+
+        w.subprocess = _Shim(
+            run=run, PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+            SubprocessError=subprocess.SubprocessError,
+        )
+        try:
+            self.assertIsNone(w._probe(["python3.99"]))
+        finally:
+            w.shutil, w.subprocess = saved
+
+    def test_a_signal_killed_handover_reports_a_usable_exit_status(self):
+        """A POSIX child killed by a signal reports -N, and an exit status is 0-255."""
+        outcome = w.ensure_floor(
+            ["wait", "1"], running=(3, 8),
+            probe=lambda c: (3, 13) if c[0] == "python3.13" else None,
+            spawn=lambda argv, env=None: _Shim(returncode=-2),
+        )
+        self.assertEqual(outcome, ("exit", 130))
 
     def test_a_handover_that_cannot_start_is_still_reported_as_json(self):
         """ensure_floor used to run outside main's try, so a spawn that raises left a
