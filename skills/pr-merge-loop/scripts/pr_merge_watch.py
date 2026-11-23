@@ -65,6 +65,10 @@ MIN_PYTHON = (3, 11)
 _PROBE_TIMEOUT_S = 3
 _LOOKAHEAD = 3  # how many minor versions above the floor to look for
 _REEXEC = "PR_MERGE_WATCH_REEXEC"
+# The exec that replaces this process. A module attribute so the tests can swap it
+# for one that refuses: a handover test that forgot to inject `execute` would
+# otherwise turn the test runner itself into the watcher.
+_EXEC = os.execvpe
 _PROBE_CODE = "import sys;sys.stdout.write('%d.%d' % sys.version_info[:2])"
 
 
@@ -161,7 +165,9 @@ def ensure_floor(argv, running=None, probe=None, spawn=None, execute=None, windo
     default --timeout 0, kept polling GitHub on the user's quota. Windows has no exec
     that keeps the caller's handle on the process - os.exec* there starts a new
     process and exits this one, so the caller would stop reading before the answer -
-    so Windows still waits on a child and returns ("exit", code).
+    so Windows still waits on a child and returns ("exit", code). That leaves the
+    old gap there: terminating only the parent leaves the child polling. Closing it
+    would take a Job Object, which the standard library does not offer.
     """
     running = tuple(running or sys.version_info[:2])
     if running >= MIN_PYTHON:
@@ -171,7 +177,7 @@ def ensure_floor(argv, running=None, probe=None, spawn=None, execute=None, windo
         return ("hint", shortfall_hint(running))
     probe = probe or _probe
     spawn = spawn or subprocess.run
-    execute = execute or os.execvpe
+    execute = execute or _EXEC
     windows = (sys.platform == "win32") if windows is None else windows
     best = running
     for candidate in interpreter_candidates():

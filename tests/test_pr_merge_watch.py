@@ -34,6 +34,15 @@ def _load():
 
 w = _load()
 
+
+def _refuse_exec(path, argv, env):
+    raise AssertionError(
+        "a test reached the real exec of %s; pass execute= or windows=True" % path)
+
+
+# Never let a test replace the runner: see _EXEC in the script.
+w._EXEC = _refuse_exec
+
 if sys.version_info[:2] < w.MIN_PYTHON:
     # Below the floor, every test that calls main() would hand over to a newer
     # interpreter, and on POSIX that exec replaces the test runner itself. CI runs
@@ -1548,7 +1557,8 @@ class PythonFloorTest(unittest.TestCase):
                 spawn=spawn, execute=execute, windows=False,
             )
         self.assertEqual(executed["path"], executed["argv"][0])
-        self.assertEqual(executed["argv"][0], "python3.13")
+        self.assertTrue(os.path.basename(executed["argv"][0]).startswith("python3.13"),
+                        executed["argv"][0])
         self.assertTrue(executed["argv"][1].endswith("pr_merge_watch.py"))
         self.assertEqual(executed["argv"][-2:], ["wait", "412"])
         self.assertEqual(executed["env"][w._REEXEC], "1", "without the flag a hop could loop")
@@ -1568,11 +1578,11 @@ class PythonFloorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             copy = d / "pr_merge_watch.py"
-            copy.write_text(
-                SCRIPT.read_text(encoding="utf-8").replace(
-                    "MIN_PYTHON = (3, 11)", "MIN_PYTHON = (99, 0)"),
-                encoding="utf-8",
-            )
+            src = SCRIPT.read_text(encoding="utf-8")
+            declared = "MIN_PYTHON = %r" % (w.MIN_PYTHON,)
+            # Without the replacement the copy would meet the floor and call the real gh.
+            self.assertIn(declared, src)
+            copy.write_text(src.replace(declared, "MIN_PYTHON = (99, 0)"), encoding="utf-8")
             bindir = d / "bin"
             bindir.mkdir()
             fake = bindir / "python99.3"
@@ -1591,7 +1601,12 @@ class PythonFloorTest(unittest.TestCase):
                 [sys.executable, str(copy), "status", "1"], env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            out, _ = proc.communicate(timeout=60)
+            try:
+                out, _ = proc.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                self.fail("the handover did not finish within 60 s")
             self.assertEqual(int((d / "pid").read_text().strip()), proc.pid,
                              "the newer interpreter ran as a child, not in place")
             # It still fails the floor (99.0), and says so in the JSON the skill reads.
