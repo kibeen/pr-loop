@@ -1275,10 +1275,33 @@ class ReviewRegressionTest(unittest.TestCase):
         fb = w.collect_feedback(pull_of(base), ME)
         self.assertEqual([i["url"] for i in fb["items"]], [], "the answered review reopened")
 
+    def _gh_argv(self, resolved):
+        fake = FakeGh([gql()])
+        saved = (w.subprocess, w.shutil)
+        w.subprocess = _Shim(run=fake)
+        w.shutil = _Shim(which=lambda name: resolved if name == "gh" else None)
+        try:
+            w.gh(["repo", "view"])
+        finally:
+            w.subprocess, w.shutil = saved
+        return fake.argv[0][0]
+
     def test_gh_is_resolved_through_pathext(self):
-        """CreateProcess only finds gh.exe; which() finds a gh.cmd or gh.bat too."""
-        source = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('shutil.which("gh")', source)
+        """CreateProcess only finds gh.exe; which() finds a gh.cmd or gh.bat too.
+
+        Asserting the source said `shutil.which` was a test of the text, not the
+        behaviour: it would have passed with the result thrown away.
+        """
+        self.assertEqual(self._gh_argv("C:\\scoop\\shims\\gh.cmd"), "C:\\scoop\\shims\\gh.cmd")
+
+    def test_a_gh_that_is_not_on_path_is_still_attempted_by_name(self):
+        """So the failure is gh's own "not found", not a silent None in the argv."""
+        self.assertEqual(self._gh_argv(None), "gh")
+
+    def test_an_unexpected_error_in_the_retry_log_names_its_type(self):
+        """`gh 호출 실패 (1/10): 'viewer'` reads as gh's fault; a KeyError is ours."""
+        self.assertRegex(w._describe(KeyError("viewer")), "^KeyError: ")
+        self.assertEqual(w._describe(w.GhError("connection reset")), "connection reset")
 
 
 class PortabilityTest(unittest.TestCase):
@@ -1306,6 +1329,7 @@ class PortabilityTest(unittest.TestCase):
         ).stdout.decode("utf-8").split(chr(10))
         loose = [l for l in dirty if l.startswith("??") and (".pyc" in l or "__pycache__" in l)]
         self.assertEqual(loose, [], "bytecode is neither tracked nor ignored: %s" % loose)
+
     def test_no_node_scripts_are_left_in_the_skills(self):
         strays = sorted(
             str(p.relative_to(ROOT)) for p in ROOT.rglob("*.mjs") if ".git" not in p.parts

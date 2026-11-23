@@ -1184,7 +1184,7 @@ def run(argv):
             failures += 1
             if getattr(e, "fatal", False) or failures >= 10:
                 raise
-            log("gh 호출 실패 (%d/10): %s" % (failures, str(e).split("\n")[0]))
+            log("gh 호출 실패 (%d/10): %s" % (failures, _describe(e).split("\n")[0]))
             time.sleep(o["interval"])
             continue
 
@@ -1208,6 +1208,17 @@ def run(argv):
         time.sleep(o["interval"] if remaining is None else min(o["interval"], remaining))
 
 
+def _describe(e):
+    """An error line that says where to look.
+
+    A bare str() on an unexpected exception reads as gh's fault: a KeyError prints as
+    just 'viewer'. Errors that are about gh keep their own message.
+    """
+    if isinstance(e, (GhError, OSError)):
+        return str(e)
+    return "%s: %s" % (type(e).__name__, e)
+
+
 def _error(hint):
     sys.stdout.write(
         json.dumps({"event": "error", "hint": hint}, indent=2, ensure_ascii=False) + "\n"
@@ -1227,7 +1238,7 @@ def main(argv=None):
         # escape as a traceback leaves the skill with no `event` to read, so every
         # remaining exception is reported the same way - with its type, since an
         # unexpected one needs more than its message to place.
-        _error(str(e) if isinstance(e, (GhError, OSError)) else "%s: %s" % (type(e).__name__, e))
+        _error(_describe(e))
         return 1
 
 
