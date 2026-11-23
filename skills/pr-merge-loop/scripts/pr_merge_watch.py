@@ -1124,7 +1124,14 @@ def graphql(query, variables):
         # response carrying `"errors": []` stayed a retryable blip. Reading it as "no
         # errors" here would fall through to the message branch and end the watch.
         if errors is not None:
-            msg = "; ".join(e.get("message") or "" for e in errors)
+            # The same fallback chain the original had: joined messages, then the
+            # top-level message, then a default. Without it an `errors: []` answer, or
+            # errors carrying no message, left the skill a `hint` of "".
+            msg = (
+                "; ".join(e.get("message") or "" for e in errors)
+                or res.get("message")
+                or "pull request not found"
+            )
             gone = any(e.get("type") == "NOT_FOUND" for e in errors)
         else:
             msg = res.get("message") or "pull request not found"

@@ -1215,6 +1215,9 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(status, 0, text)
         self.assertEqual([out["event"], fake.calls], ["merged", 2])
         self.assertRegex(err, r"gh 호출 실패 \(1/10\)")
+        # and the line says something: errors carrying no message used to leave it blank
+        self.assertNotRegex(err, r"gh 호출 실패 \(1/10\):\s*$")
+        self.assertRegex(err, "pull request not found")
 
     def test_a_missing_pr_and_bad_arguments_end_with_an_error_instead_of_a_retry_loop(self):
         status, out, _, fake, _ = run_watcher(
