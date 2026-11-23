@@ -89,8 +89,20 @@ def interpreter_candidates():
     return out
 
 
-def _probe(argv):
-    """The version `argv` starts, or None if it will not run."""
+def _resolve(candidate):
+    """PATHEXT-aware resolution, the same `gh` gets.
+
+    On Windows there are no python3.11..python3.14 executables, so the usable
+    candidates are python, python3 and py - and pyenv-win installs those as .bat
+    shims, which CreateProcess cannot find by bare name. Without this, a machine
+    with 3.13 on PATH is told to go install Python.
+    """
+    return [shutil.which(candidate[0]) or candidate[0]] + list(candidate[1:])
+
+
+def _probe(candidate):
+    """The version `candidate` starts, or None if it will not run."""
+    argv = _resolve(candidate)
     try:
         r = subprocess.run(
             argv + ["-c", _PROBE_CODE],
@@ -159,7 +171,7 @@ def ensure_floor(argv, running=None, probe=None, spawn=None):
         if got >= MIN_PYTHON:
             env = dict(os.environ)
             env[_REEXEC] = "1"
-            r = spawn(candidate + [os.path.abspath(__file__)] + list(argv), env=env)
+            r = spawn(_resolve(candidate) + [os.path.abspath(__file__)] + list(argv), env=env)
             return ("exit", r.returncode)
         best = max(best, got)
     return ("hint", shortfall_hint(best))
@@ -1347,14 +1359,16 @@ def _error(hint):
 
 def main(argv=None):
     argv = list(argv if argv is not None else sys.argv[1:])
-    outcome = ensure_floor(argv)
-    if outcome is not None:
-        kind, value = outcome
-        if kind == "exit":
-            return value
-        _error(value)
-        return 1
     try:
+        # Inside the try: a handover that fails to start, or a Ctrl+C while the newer
+        # interpreter is running, must still leave the skill an `event` to read.
+        outcome = ensure_floor(argv)
+        if outcome is not None:
+            kind, value = outcome
+            if kind == "exit":
+                return value
+            _error(value)
+            return 1
         return run(argv)
     except UsageError as e:
         _error(str(e))

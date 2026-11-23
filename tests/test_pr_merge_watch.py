@@ -1344,8 +1344,10 @@ class PythonFloorTest(unittest.TestCase):
         self.assertEqual(names[0], "python%d.%d" % (major, minor + 3))
         self.assertEqual(names[3], "python%d.%d" % (major, minor))
         self.assertEqual(names[-3:], ["python%d" % major, "python", "py -%d" % major])
-        # no version is written here a second time
-        self.assertNotIn("3.9", names)
+        # join first: assertNotIn against the list compares whole elements, so a
+        # hardcoded "python3.9" candidate would have slipped past this
+        self.assertNotIn("3.9", " ".join(names))
+        self.assertNotIn("3.10", " ".join(names))
 
     def test_an_older_interpreter_hands_over_to_a_newer_one(self):
         spawned = {}
@@ -1390,9 +1392,81 @@ class PythonFloorTest(unittest.TestCase):
         self.assertIn("3.10", hint, "the best version found belongs in the message")
         self.assertIn(w.upgrade_hint(), hint)
 
+    @contextlib.contextmanager
+    def _machine(self, platform, managers=None):
+        saved = (w.sys, w.shutil)
+        w.sys = _Shim(platform=platform, version_info=sys.version_info, stdout=sys.stdout)
+        w.shutil = _Shim(which=lambda name: (managers or {}).get(name))
+        try:
+            yield
+        finally:
+            w.sys, w.shutil = saved
+
     def test_an_upgrade_hint_is_always_offered(self):
+        """Every platform gets one runnable command that installs Python."""
         self.assertTrue(w.upgrade_hint().strip())
-        self.assertIn(w.floor_str(), w.upgrade_hint())
+        self.assertIn("python", w.upgrade_hint().lower())
+
+    def test_the_versioned_hints_take_their_version_from_the_floor(self):
+        for platform, prefix in (("win32", "winget install Python.Python."),
+                                 ("darwin", "brew install python@")):
+            with self._machine(platform):
+                self.assertEqual(w.upgrade_hint(), prefix + w.floor_str())
+
+    def test_a_rolling_distro_hint_carries_no_version(self):
+        """Arch's `python` package is the current one; python3.11 does not exist there.
+
+        Asserting the floor appears in every hint failed on that machine, and CI
+        (ubuntu, windows) could not see it.
+        """
+        with self._machine("linux", {"pacman": "/usr/bin/pacman"}):
+            self.assertEqual(w.upgrade_hint(), "sudo pacman -S python")
+
+    def test_a_machine_with_no_known_package_manager_still_gets_told_what_to_do(self):
+        with self._machine("linux"):
+            self.assertEqual(w.upgrade_hint(), "install Python %s or newer" % w.floor_str())
+
+    def test_interpreter_candidates_are_resolved_through_pathext(self):
+        """The same defect as gh: pyenv-win installs python as a .bat shim, which
+        CreateProcess cannot find by bare name."""
+        shim = "C:\\pyenv\\shims\\python.bat"
+        spawned = {}
+
+        def spawn(argv, env=None):
+            spawned["argv"] = argv
+            return _Shim(returncode=0)
+
+        saved = w.shutil
+        w.shutil = _Shim(which=lambda name: shim if name == "python" else None)
+        try:
+            outcome = w.ensure_floor(
+                ["status", "1"], running=(3, 8),
+                probe=lambda c: (3, 13) if c[0] == "python" else None,
+                spawn=spawn,
+            )
+        finally:
+            w.shutil = saved
+        self.assertEqual(outcome, ("exit", 0))
+        self.assertEqual(spawned["argv"][0], shim)
+
+    def test_a_handover_that_cannot_start_is_still_reported_as_json(self):
+        """ensure_floor used to run outside main's try, so a spawn that raises left a
+        traceback and an empty stdout - the defect round 1 fixed one layer down."""
+        out = io.StringIO()
+        saved = w.ensure_floor
+
+        def boom(argv):
+            raise OSError("[WinError 2] cannot find python3.13")
+
+        w.ensure_floor = boom
+        try:
+            with contextlib.redirect_stdout(out):
+                status = w.main(["status", "412"])
+        finally:
+            w.ensure_floor = saved
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(out.getvalue())["event"], "error")
+        self.assertIn("WinError 2", json.loads(out.getvalue())["hint"])
 
     def test_a_machine_below_the_floor_still_answers_in_json(self):
         """The skill reads `event`; a traceback or a bare stderr line leaves it nothing."""
