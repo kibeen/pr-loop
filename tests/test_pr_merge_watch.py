@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import unittest
@@ -1211,6 +1212,75 @@ class CommandTest(unittest.TestCase):
         self.assertRegex(out["hint"], "expected a number of seconds")
 
 
+class ReviewRegressionTest(unittest.TestCase):
+    """The four defects round 1 of the port review found, each with the case that showed it."""
+
+    def test_any_exception_still_leaves_a_json_object_on_stdout(self):
+        """The contract the skill reads is `event`, always.
+
+        The Node version caught everything; this port first caught only GhError and
+        OSError, so a half-written GraphQL answer (pullRequest present, viewer null)
+        escaped as a traceback with nothing on stdout.
+        """
+        half = {"data": {"viewer": None, "repository": payload()["repository"]}}
+        status, out, _, _, text = run_watcher(["status", "412", "--repo", "acme/engine"], [half])
+        self.assertEqual(status, 1, text)
+        self.assertIsNotNone(out, "stdout was not JSON: %r" % text)
+        self.assertEqual(out["event"], "error")
+        self.assertRegex(out["hint"], "TypeError")
+
+    def test_an_unexpected_error_is_retried_like_a_blip_not_raised(self):
+        """A watch that may run for hours cannot die on one malformed answer."""
+        half = {"data": {"viewer": None, "repository": payload()["repository"]}}
+        merged = gql({"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z",
+                      "mergeCommit": {"oid": "f" * 40}})
+        status, out, err, fake, text = run_watcher(
+            ["wait", "412", "--repo", "acme/engine", "--interval", "1"], [half, merged]
+        )
+        self.assertEqual(status, 0, text)
+        self.assertEqual([out["event"], fake.calls], ["merged", 2])
+        self.assertRegex(err, r"gh 호출 실패 \(1/10\)")
+
+    def test_timed_events_reads_the_same_snake_case_options_as_everything_else(self):
+        """mode_of returns no_auto; a camelCase read was silently ignoring it.
+
+        With the option dropped, a manual-mode watch would report `stuck` for a PR
+        that is merely waiting for the human merge it is supposed to wait for.
+        """
+        s = snap(dict(AUTO, reviewDecision="APPROVED", mergeStateStatus="BLOCKED"), {},
+                 [ok("Unit", required=True)])
+        # the first call starts the timer, the second finds the grace period elapsed
+        watched = {}
+        self.assertEqual(w.timed_events(s, {"no_auto": False}, watched, 1000, 300_000), [])
+        self.assertEqual(
+            w.timed_events(s, {"no_auto": False}, watched, 301_000, 300_000), ["stuck"]
+        )
+        manual = {}
+        self.assertEqual(w.timed_events(s, {"no_auto": True}, manual, 1000, 300_000), [])
+        self.assertEqual(w.timed_events(s, {"no_auto": True}, manual, 301_000, 300_000), [])
+
+    def test_a_date_only_until_does_not_reopen_everything_already_answered(self):
+        """Date.parse takes a bare date; the first regex here did not, so a marker
+        typed as `until=2026-01-03` read as 0 and the anchor fell to the epoch."""
+        self.assertEqual(w.ts("2026-01-03"), w.ts("2026-01-03T00:00:00Z"))
+        base = {
+            "reviews": {"nodes": [
+                {"url": "r1", "state": "CHANGES_REQUESTED", "body": "fix it",
+                 "submittedAt": "2026-01-02T00:00:00Z", "author": user("jane")}
+            ]},
+            "comments": {"nodes": [mark(
+                "i4", "step=feedback round=1 sha=bbb until=2026-01-03",
+                "2026-01-03T01:00:00Z")]},
+        }
+        fb = w.collect_feedback(pull_of(base), ME)
+        self.assertEqual([i["url"] for i in fb["items"]], [], "the answered review reopened")
+
+    def test_gh_is_resolved_through_pathext(self):
+        """CreateProcess only finds gh.exe; which() finds a gh.cmd or gh.bat too."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('shutil.which("gh")', source)
+
+
 class PortabilityTest(unittest.TestCase):
     """The watcher used to need Node.js. Nothing here may quietly bring a runtime back."""
 
@@ -1220,6 +1290,8 @@ class PortabilityTest(unittest.TestCase):
         Importing the watcher writes bytecode next to it, so the repository has to
         ignore it; otherwise the next `git add -A` carries build output into a commit.
         """
+        if not shutil.which("git") or not (ROOT / ".git").exists():
+            self.skipTest("not a git checkout")
         tracked = subprocess.run(
             ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True,
         ).stdout.decode("utf-8").split(chr(0))
@@ -1268,7 +1340,8 @@ class PortabilityTest(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         imports = set(re.findall(r"^(?:from|import)\s+([A-Za-z_][\w.]*)", source, re.M))
         allowed = {
-            "__future__", "datetime", "json", "os", "re", "subprocess", "sys", "time", "urllib",
+            "__future__", "datetime", "json", "os", "re", "shutil", "subprocess", "sys", "time",
+            "urllib",
             "urllib.parse",
         }
         self.assertEqual(imports - allowed, set(), "unexpected import")
@@ -1276,7 +1349,9 @@ class PortabilityTest(unittest.TestCase):
     def test_the_declared_python_floor_is_the_one_ci_runs(self):
         """A floor that nothing runs is the defect this repo's sibling already shipped."""
         workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
-        in_ci = sorted(set(re.findall(r'"(\d+\.\d+)"', workflow)))
+        found = set(re.findall(r'"(\d+\.\d+)"', workflow))
+        # by number, not by string: "3.11" sorts before "3.9" lexicographically
+        in_ci = sorted(found, key=lambda v: tuple(int(n) for n in v.split(".")))
         self.assertTrue(in_ci, "the workflow pins no Python version")
         floor = in_ci[0]
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

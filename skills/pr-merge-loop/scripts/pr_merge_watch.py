@@ -19,6 +19,11 @@ changes the pull request: every push, comment and merge stays an explicit comman
 of the agent. All state lives in the PR itself, so a new session can run it again.
 
 Standard library only, no Node.js. Needs `gh` on PATH and Python 3.11 or newer.
+
+Exit codes: 0 when a snapshot was printed, 2 when the arguments were wrong, 1 when the
+run failed. The Node version split 2 from 1 by how the message began, so `--timeout soon`
+exited 1 there and exits 2 here; stdout carries the same {"event": "error", "hint": ...}
+either way, which is what the skill reads.
 """
 from __future__ import annotations
 
@@ -26,6 +31,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -125,8 +131,12 @@ query($owner:String!,$name:String!,$number:Int!,$before:String!){
 # ---------------------------------------------------------------- pure logic
 
 _ISO_RE = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2})"
-    r"(?::(\d{2})(?:\.(\d+))?)?"
+    r"^(\d{4})-(\d{2})-(\d{2})"
+    # The time is optional: Date.parse accepts a bare date, and a `until=2026-11-13`
+    # typed by hand into a marker must not read as 0 - that would move the anchor back
+    # to the beginning of time and reopen every review item already answered.
+    r"(?:[Tt ](\d{2}):(\d{2})"
+    r"(?::(\d{2})(?:\.(\d+))?)?)?"
     r"(Z|z|[+-]\d{2}:?\d{2})?$"
 )
 
@@ -143,7 +153,9 @@ def ts(value) -> int:
     m = _ISO_RE.match(str(value).strip())
     if not m:
         return 0
-    year, month, day, hour, minute = (int(m.group(i)) for i in range(1, 6))
+    year, month, day = (int(m.group(i)) for i in range(1, 4))
+    hour = int(m.group(4) or 0)
+    minute = int(m.group(5) or 0)
     second = int(m.group(6) or 0)
     frac = m.group(7) or ""
     micro = int((frac + "000000")[:6]) if frac else 0
@@ -649,7 +661,7 @@ def timed_events(s, opts, since, now, grace_ms):
 
     `since` carries the first time each condition was seen across polls.
     """
-    no_auto = (opts or {}).get("noAuto", False)
+    no_auto = (opts or {}).get("no_auto", False)
 
     def held(name, active):
         if not active:
@@ -944,9 +956,12 @@ class UsageError(Exception):
 
 
 def gh(args):
+    # which() honours PATHEXT, so a gh installed as gh.cmd or gh.bat is found; passing a
+    # bare "gh" to CreateProcess only ever finds gh.exe. node's spawnSync looked at PATHEXT.
+    exe = shutil.which("gh") or "gh"
     try:
         r = subprocess.run(
-            ["gh"] + list(args), capture_output=True, text=True,
+            [exe] + list(args), capture_output=True, text=True,
             encoding="utf-8", errors="replace",
         )
     except OSError as e:
@@ -1162,10 +1177,12 @@ def run(argv):
         try:
             s = fetch_snapshot(o, cache)
             failures = 0
-        except GhError as e:
+        except Exception as e:
             # A network blip must not end a watch that may run for hours; a broken login must.
+            # Everything is retried, not just GhError: a half-written GraphQL answer surfaces
+            # as a TypeError or KeyError here, and the original caught those the same way.
             failures += 1
-            if e.fatal or failures >= 10:
+            if getattr(e, "fatal", False) or failures >= 10:
                 raise
             log("gh 호출 실패 (%d/10): %s" % (failures, str(e).split("\n")[0]))
             time.sleep(o["interval"])
@@ -1174,7 +1191,7 @@ def run(argv):
         opts = mode_of(o, s)
         events = classify(s, expect_auto=not opts["no_auto"], **opts)
         events = events + timed_events(
-            s, {"noAuto": opts["no_auto"]}, since, time.time() * 1000, o["grace"] * 1000
+            s, opts, since, time.time() * 1000, o["grace"] * 1000
         )
         if events:
             emit(s, events, opts)
@@ -1191,21 +1208,27 @@ def run(argv):
         time.sleep(o["interval"] if remaining is None else min(o["interval"], remaining))
 
 
+def _error(hint):
+    sys.stdout.write(
+        json.dumps({"event": "error", "hint": hint}, indent=2, ensure_ascii=False) + "\n"
+    )
+
+
 def main(argv=None):
     try:
         return run(list(argv if argv is not None else sys.argv[1:]))
     except UsageError as e:
-        sys.stdout.write(
-            json.dumps({"event": "error", "hint": str(e)}, indent=2, ensure_ascii=False) + "\n"
-        )
+        _error(str(e))
         return 2
-    except (GhError, OSError) as e:
-        sys.stdout.write(
-            json.dumps({"event": "error", "hint": str(e)}, indent=2, ensure_ascii=False) + "\n"
-        )
-        return 1
     except KeyboardInterrupt:
         return 130
+    except Exception as e:
+        # The caller's contract is a JSON object on stdout, always. Letting anything
+        # escape as a traceback leaves the skill with no `event` to read, so every
+        # remaining exception is reported the same way - with its type, since an
+        # unexpected one needs more than its message to place.
+        _error(str(e) if isinstance(e, (GhError, OSError)) else "%s: %s" % (type(e).__name__, e))
+        return 1
 
 
 if __name__ == "__main__":
