@@ -147,13 +147,21 @@ def shortfall_hint(found=None) -> str:
     )
 
 
-def ensure_floor(argv, running=None, probe=None, spawn=None):
+def ensure_floor(argv, running=None, probe=None, spawn=None, execute=None, windows=None):
     """Make sure the interpreter running this meets the floor.
 
     Returns None to go ahead. Otherwise a newer interpreter on this machine runs the
-    same command and ("exit", code) carries its result, or ("hint", text) says what to
-    install. The caller reports that through the same JSON the skill already reads: a
-    bare message on stderr would leave it with no `event` to act on.
+    same command, or ("hint", text) says what to install. The caller reports that
+    through the same JSON the skill already reads: a bare message on stderr would leave
+    it with no `event` to act on.
+
+    On POSIX the newer interpreter replaces this process (exec), so there is one
+    process to signal or kill. Starting it as a child instead left the child running
+    when only the parent was signalled: it was re-parented to init and, with the
+    default --timeout 0, kept polling GitHub on the user's quota. Windows has no exec
+    that keeps the caller's handle on the process - os.exec* there starts a new
+    process and exits this one, so the caller would stop reading before the answer -
+    so Windows still waits on a child and returns ("exit", code).
     """
     running = tuple(running or sys.version_info[:2])
     if running >= MIN_PYTHON:
@@ -163,6 +171,8 @@ def ensure_floor(argv, running=None, probe=None, spawn=None):
         return ("hint", shortfall_hint(running))
     probe = probe or _probe
     spawn = spawn or subprocess.run
+    execute = execute or os.execvpe
+    windows = (sys.platform == "win32") if windows is None else windows
     best = running
     for candidate in interpreter_candidates():
         got = probe(candidate)
@@ -171,7 +181,14 @@ def ensure_floor(argv, running=None, probe=None, spawn=None):
         if got >= MIN_PYTHON:
             env = dict(os.environ)
             env[_REEXEC] = "1"
-            r = spawn(_resolve(candidate) + [os.path.abspath(__file__)] + list(argv), env=env)
+            cmd = _resolve(candidate) + [os.path.abspath(__file__)] + list(argv)
+            if not windows:
+                # Nothing has been written yet, but a buffered byte would be lost.
+                sys.stdout.flush()
+                sys.stderr.flush()
+                execute(cmd[0], cmd, env)  # does not return; a failure raises OSError
+                raise OSError("exec of %s returned without replacing this process" % cmd[0])
+            r = spawn(cmd, env=env)
             code = r.returncode
             # A POSIX child killed by a signal reports -N; an exit status has to be
             # 0-255, so pass on the shell's convention instead of a negative number.
@@ -1373,8 +1390,9 @@ def _error(hint):
 def main(argv=None):
     argv = list(argv if argv is not None else sys.argv[1:])
     try:
-        # Inside the try: a handover that fails to start, or a Ctrl+C while the newer
-        # interpreter is running, must still leave the skill an `event` to read.
+        # Inside the try: a handover that fails to start must still leave the skill an
+        # `event` to read. (On POSIX a started handover has replaced this process, so
+        # what happens after that - Ctrl+C included - is the newer interpreter's.)
         outcome = ensure_floor(argv)
         if outcome is not None:
             kind, value = outcome

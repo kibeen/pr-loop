@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,6 +33,14 @@ def _load():
 
 
 w = _load()
+
+if sys.version_info[:2] < w.MIN_PYTHON:
+    # Below the floor, every test that calls main() would hand over to a newer
+    # interpreter, and on POSIX that exec replaces the test runner itself. CI runs
+    # the floor and above; stop here instead.
+    raise RuntimeError(
+        "run this suite on Python %s or newer, not %s" % (w.floor_str(), w.version_str())
+    )
 
 ME = "author"
 
@@ -1376,7 +1385,7 @@ class PythonFloorTest(unittest.TestCase):
         outcome = w.ensure_floor(
             ["wait", "412"], running=(3, 8),
             probe=lambda argv: (3, 13) if argv[0] == "python3.13" else None,
-            spawn=spawn,
+            spawn=spawn, windows=True,
         )
         self.assertEqual(outcome, ("exit", 7))
         self.assertEqual(spawned["argv"][0], "python3.13")
@@ -1458,7 +1467,7 @@ class PythonFloorTest(unittest.TestCase):
             outcome = w.ensure_floor(
                 ["status", "1"], running=(3, 8),
                 probe=lambda c: (3, 13) if c[0] == "python" else None,
-                spawn=spawn,
+                spawn=spawn, windows=True,
             )
         finally:
             w.shutil = saved
@@ -1514,9 +1523,80 @@ class PythonFloorTest(unittest.TestCase):
         outcome = w.ensure_floor(
             ["wait", "1"], running=(3, 8),
             probe=lambda c: (3, 13) if c[0] == "python3.13" else None,
-            spawn=lambda argv, env=None: _Shim(returncode=-2),
+            spawn=lambda argv, env=None: _Shim(returncode=-2), windows=True,
         )
         self.assertEqual(outcome, ("exit", 130))
+
+    def test_on_posix_the_newer_interpreter_replaces_this_process(self):
+        """A child would outlive a signalled parent and keep polling GitHub."""
+        class Replaced(Exception):
+            pass
+
+        executed = {}
+
+        def execute(path, argv, env):
+            executed.update(path=path, argv=argv, env=env)
+            raise Replaced
+
+        def spawn(argv, env=None):
+            raise AssertionError("POSIX must exec, not start a child")
+
+        with self.assertRaises(Replaced):
+            w.ensure_floor(
+                ["wait", "412"], running=(3, 8),
+                probe=lambda c: (3, 13) if c[0] == "python3.13" else None,
+                spawn=spawn, execute=execute, windows=False,
+            )
+        self.assertEqual(executed["path"], executed["argv"][0])
+        self.assertEqual(executed["argv"][0], "python3.13")
+        self.assertTrue(executed["argv"][1].endswith("pr_merge_watch.py"))
+        self.assertEqual(executed["argv"][-2:], ["wait", "412"])
+        self.assertEqual(executed["env"][w._REEXEC], "1", "without the flag a hop could loop")
+
+    def test_an_exec_that_returns_is_an_error_not_a_silent_success(self):
+        with self.assertRaises(OSError):
+            w.ensure_floor(
+                ["status", "1"], running=(3, 8),
+                probe=lambda c: (3, 13) if c[0] == "python3.13" else None,
+                execute=lambda path, argv, env: None, windows=False,
+            )
+
+    @unittest.skipIf(sys.platform == "win32", "exec replaces the process only on POSIX")
+    def test_the_handover_keeps_the_pid_the_caller_holds(self):
+        """End to end with real processes: the interpreter that answers runs under
+        the PID the caller started, so signalling that PID reaches it."""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            copy = d / "pr_merge_watch.py"
+            copy.write_text(
+                SCRIPT.read_text(encoding="utf-8").replace(
+                    "MIN_PYTHON = (3, 11)", "MIN_PYTHON = (99, 0)"),
+                encoding="utf-8",
+            )
+            bindir = d / "bin"
+            bindir.mkdir()
+            fake = bindir / "python99.3"
+            fake.write_text(
+                "#!/bin/sh\n"
+                'case "$1" in -c) echo 99.3; exit 0;; esac\n'
+                'echo $$ > "$PIDFILE"\n'
+                'exec "$REAL_PYTHON" "$@"\n',
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                       PIDFILE=str(d / "pid"), REAL_PYTHON=sys.executable)
+            env.pop(w._REEXEC, None)
+            proc = subprocess.Popen(
+                [sys.executable, str(copy), "status", "1"], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            out, _ = proc.communicate(timeout=60)
+            self.assertEqual(int((d / "pid").read_text().strip()), proc.pid,
+                             "the newer interpreter ran as a child, not in place")
+            # It still fails the floor (99.0), and says so in the JSON the skill reads.
+            self.assertEqual(json.loads(out)["event"], "error")
+            self.assertEqual(proc.returncode, 1)
 
     def test_a_handover_that_cannot_start_is_still_reported_as_json(self):
         """ensure_floor used to run outside main's try, so a spawn that raises left a
