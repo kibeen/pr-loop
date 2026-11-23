@@ -329,6 +329,21 @@ class RulesTest(unittest.TestCase):
         s = snap({}, {"viewerDefaultMergeMethod": "MERGE"}, [], rulesets)
         self.assertEqual([s["repo"]["mergeMethods"], s["repo"]["defaultMergeMethod"]], [["squash"], "squash"])
 
+    def test_rules_that_leave_no_method_allowed_offer_none(self):
+        """JS read `[]` as truthy, so an empty intersection excluded every method.
+
+        Reading it as "no restriction" would hand the skill a merge method the
+        branch rules forbid, and SKILL.md picks the method from defaultMergeMethod.
+        """
+        disjoint = [
+            {"type": "pull_request", "parameters": {"allowed_merge_methods": ["squash"]}},
+            {"type": "pull_request", "parameters": {"allowed_merge_methods": ["rebase"]}},
+        ]
+        self.assertEqual(w.merge_rules(None, disjoint)["allowedMergeMethods"], [])
+        s = snap({}, {}, [], disjoint)
+        self.assertEqual(s["repo"]["mergeMethods"], [])
+        self.assertIsNone(s["repo"]["defaultMergeMethod"])
+
 
 class FeedbackTest(unittest.TestCase):
     def test_reviewer_feedback_is_reported_and_own_and_bot_noise_is_not(self):
@@ -1306,6 +1321,104 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertEqual(w._describe(w.GhError("connection reset")), "connection reset")
 
 
+class PythonFloorTest(unittest.TestCase):
+    """What happens on a machine whose Python is too old.
+
+    The sibling repo shipped a declared floor that nothing enforced and nothing ran.
+    Here the floor is enforced at startup: a newer interpreter on the machine runs the
+    command instead, and when there is none the reply says what to install - through the
+    same JSON the skill reads, not a bare message it has no `event` for.
+    """
+
+    def test_a_new_enough_interpreter_probes_nothing(self):
+        probed = []
+        self.assertIsNone(w.ensure_floor(
+            ["status", "1"], running=w.MIN_PYTHON,
+            probe=lambda argv: probed.append(argv),
+        ))
+        self.assertEqual(probed, [], "a satisfied machine must not spawn probes")
+
+    def test_candidates_come_from_the_floor_newest_first(self):
+        names = [" ".join(c) for c in w.interpreter_candidates()]
+        major, minor = w.MIN_PYTHON
+        self.assertEqual(names[0], "python%d.%d" % (major, minor + 3))
+        self.assertEqual(names[3], "python%d.%d" % (major, minor))
+        self.assertEqual(names[-3:], ["python%d" % major, "python", "py -%d" % major])
+        # no version is written here a second time
+        self.assertNotIn("3.9", names)
+
+    def test_an_older_interpreter_hands_over_to_a_newer_one(self):
+        spawned = {}
+
+        def spawn(argv, env=None):
+            spawned["argv"] = argv
+            spawned["env"] = env
+            return _Shim(returncode=7)
+
+        outcome = w.ensure_floor(
+            ["wait", "412"], running=(3, 8),
+            probe=lambda argv: (3, 13) if argv[0] == "python3.13" else None,
+            spawn=spawn,
+        )
+        self.assertEqual(outcome, ("exit", 7))
+        self.assertEqual(spawned["argv"][0], "python3.13")
+        self.assertEqual(spawned["argv"][-2:], ["wait", "412"])
+        self.assertTrue(spawned["argv"][1].endswith("pr_merge_watch.py"))
+        self.assertEqual(spawned["env"][w._REEXEC], "1", "without the flag a hop could loop")
+
+    def test_the_handover_happens_once(self):
+        """The newer interpreter is still too old only if the probe lied; do not loop."""
+        saved = os.environ.get(w._REEXEC)
+        os.environ[w._REEXEC] = "1"
+        try:
+            kind, hint = w.ensure_floor(["status", "1"], running=(3, 8), probe=lambda a: (3, 13))
+        finally:
+            if saved is None:
+                os.environ.pop(w._REEXEC, None)
+            else:
+                os.environ[w._REEXEC] = saved
+        self.assertEqual(kind, "hint")
+        self.assertIn("3.8", hint)
+
+    def test_nothing_new_enough_reports_the_best_found_and_a_command(self):
+        kind, hint = w.ensure_floor(
+            ["status", "1"], running=(3, 8),
+            probe=lambda argv: (3, 10) if argv[0] == "python3" else None,
+        )
+        self.assertEqual(kind, "hint")
+        self.assertIn(w.floor_str(), hint)
+        self.assertIn("3.10", hint, "the best version found belongs in the message")
+        self.assertIn(w.upgrade_hint(), hint)
+
+    def test_an_upgrade_hint_is_always_offered(self):
+        self.assertTrue(w.upgrade_hint().strip())
+        self.assertIn(w.floor_str(), w.upgrade_hint())
+
+    def test_a_machine_below_the_floor_still_answers_in_json(self):
+        """The skill reads `event`; a traceback or a bare stderr line leaves it nothing."""
+        out = io.StringIO()
+        saved = w.ensure_floor
+        w.ensure_floor = lambda argv: ("hint", "Python 3.11 이상이 필요합니다 — winget install X")
+        try:
+            with contextlib.redirect_stdout(out):
+                status = w.main(["status", "412"])
+        finally:
+            w.ensure_floor = saved
+        self.assertEqual(status, 1)
+        payload_out = json.loads(out.getvalue())
+        self.assertEqual(payload_out["event"], "error")
+        self.assertIn("winget install X", payload_out["hint"])
+
+    def test_the_handover_exit_code_is_the_answer(self):
+        saved = w.ensure_floor
+        w.ensure_floor = lambda argv: ("exit", 3)
+        try:
+            status = w.main(["status", "412"])
+        finally:
+            w.ensure_floor = saved
+        self.assertEqual(status, 3)
+
+
 class PortabilityTest(unittest.TestCase):
     """The watcher used to need Node.js. Nothing here may quietly bring a runtime back."""
 
@@ -1378,7 +1491,10 @@ class PortabilityTest(unittest.TestCase):
         if not path.exists():
             self.skipTest("no workflow in this copy")
         workflow = path.read_text(encoding="utf-8")
-        found = set(re.findall(r'"(\d+\.\d+)"', workflow))
+        # only the matrix line, so a quoted decimal elsewhere cannot pose as the floor
+        matrix = re.search(r"python-version:\s*\[([^\]]*)\]", workflow)
+        self.assertIsNotNone(matrix, "the workflow pins no python-version matrix")
+        found = set(re.findall(r'"(\d+\.\d+)"', matrix.group(1)))
         # by number, not by string: "3.11" sorts before "3.9" lexicographically
         in_ci = sorted(found, key=lambda v: tuple(int(n) for n in v.split(".")))
         self.assertTrue(in_ci, "the workflow pins no Python version")
@@ -1387,6 +1503,10 @@ class PortabilityTest(unittest.TestCase):
         self.assertIn(
             "Python %s+" % floor, readme,
             "README must state the floor CI runs (%s)" % floor,
+        )
+        self.assertEqual(
+            w.floor_str(), floor,
+            "MIN_PYTHON is the source of truth; CI must run it, not another number",
         )
         self.assertIn(
             "Python %s" % floor, SCRIPT.read_text(encoding="utf-8"),

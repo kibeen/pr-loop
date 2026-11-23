@@ -57,6 +57,114 @@ def _force_utf8_stdio():
 
 _force_utf8_stdio()
 
+# ---------------------------------------------------------------- python floor
+
+# The one place the minimum version is written. The workflow and the README are
+# checked against it by tests, so no second copy can drift from it.
+MIN_PYTHON = (3, 11)
+_PROBE_TIMEOUT_S = 3
+_LOOKAHEAD = 3  # how many minor versions above the floor to look for
+_REEXEC = "PR_MERGE_WATCH_REEXEC"
+_PROBE_CODE = "import sys;sys.stdout.write('%d.%d' % sys.version_info[:2])"
+
+
+def floor_str() -> str:
+    return "%d.%d" % MIN_PYTHON
+
+
+def version_str(info=None) -> str:
+    return "%d.%d" % tuple((info or sys.version_info)[:2])
+
+
+def interpreter_candidates():
+    """Interpreters to try, newest first, derived from the floor.
+
+    `py -3` is the Windows launcher, which knows about installs not on PATH.
+    """
+    major, minor = MIN_PYTHON
+    out = [["python%d.%d" % (major, m)] for m in range(minor + _LOOKAHEAD, minor - 1, -1)]
+    out.append(["python%d" % major])
+    out.append(["python"])
+    out.append(["py", "-%d" % major])
+    return out
+
+
+def _probe(argv):
+    """The version `argv` starts, or None if it will not run."""
+    try:
+        r = subprocess.run(
+            argv + ["-c", _PROBE_CODE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=_PROBE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        major, minor = r.stdout.decode("ascii", "replace").strip().split(".")[:2]
+        return (int(major), int(minor))
+    except (ValueError, IndexError):
+        return None
+
+
+def upgrade_hint() -> str:
+    """One command that gets a Python meeting the floor.
+
+    The version comes from MIN_PYTHON, never a second hardcoded number. This prints
+    the command rather than running it: installing a runtime changes the machine and
+    usually needs an administrator, so it stays the user's call.
+    """
+    want = floor_str()
+    if sys.platform == "win32":
+        return "winget install Python.Python." + want
+    if sys.platform == "darwin":
+        return "brew install python@" + want
+    for manager, command in (
+        ("apt-get", "sudo apt install python" + want),
+        ("dnf", "sudo dnf install python" + want),
+        ("pacman", "sudo pacman -S python"),
+        ("zypper", "sudo zypper install python" + want.replace(".", "")),
+    ):
+        if shutil.which(manager):
+            return command
+    return "install Python " + want + " or newer"
+
+
+def shortfall_hint(found=None) -> str:
+    return (
+        "Python %s 이상이 필요하지만 이 머신에서 가장 새 것은 %s 입니다. 설치하면 바로 됩니다 — %s"
+        % (floor_str(), version_str(found), upgrade_hint())
+    )
+
+
+def ensure_floor(argv, running=None, probe=None, spawn=None):
+    """Make sure the interpreter running this meets the floor.
+
+    Returns None to go ahead. Otherwise a newer interpreter on this machine runs the
+    same command and ("exit", code) carries its result, or ("hint", text) says what to
+    install. The caller reports that through the same JSON the skill already reads: a
+    bare message on stderr would leave it with no `event` to act on.
+    """
+    running = tuple(running or sys.version_info[:2])
+    if running >= MIN_PYTHON:
+        return None
+    if os.environ.get(_REEXEC):
+        # A newer interpreter was already started once; a second hop would loop.
+        return ("hint", shortfall_hint(running))
+    probe = probe or _probe
+    spawn = spawn or subprocess.run
+    best = running
+    for candidate in interpreter_candidates():
+        got = probe(candidate)
+        if got is None:
+            continue
+        if got >= MIN_PYTHON:
+            env = dict(os.environ)
+            env[_REEXEC] = "1"
+            r = spawn(candidate + [os.path.abspath(__file__)] + list(argv), env=env)
+            return ("exit", r.returncode)
+        best = max(best, got)
+    return ("hint", shortfall_hint(best))
+
+
 MARKER_RE = re.compile(r"<!--\s*pr-review-loop\s+([^>]*?)\s*-->")
 # gh merges at once instead of arming auto-merge when the PR is in one of these states.
 IMMEDIATELY_MERGEABLE = {"CLEAN", "HAS_HOOKS", "UNSTABLE"}
@@ -726,7 +834,12 @@ def build_snapshot(data, rulesets=None, extra_contexts=None, skip_ok=False):
         (repo.get("squashMergeAllowed"), "squash"),
         (repo.get("rebaseMergeAllowed"), "rebase"),
     ):
-        if allowed and (not rules["allowedMergeMethods"] or name in rules["allowedMergeMethods"]):
+        # `is None`, not falsiness: an empty list means the rulesets left no method
+        # allowed, and JS read `[]` as truthy, so it excluded everything. Treating it
+        # as "no restriction" would offer gh a method the branch rules forbid.
+        if allowed and (
+            rules["allowedMergeMethods"] is None or name in rules["allowedMergeMethods"]
+        ):
             methods.append(name)
     preferred = (repo.get("viewerDefaultMergeMethod") or "").lower()
     # The last auto-merge event tells a merge that was never armed from one somebody switched off.
@@ -1233,8 +1346,16 @@ def _error(hint):
 
 
 def main(argv=None):
+    argv = list(argv if argv is not None else sys.argv[1:])
+    outcome = ensure_floor(argv)
+    if outcome is not None:
+        kind, value = outcome
+        if kind == "exit":
+            return value
+        _error(value)
+        return 1
     try:
-        return run(list(argv if argv is not None else sys.argv[1:]))
+        return run(argv)
     except UsageError as e:
         _error(str(e))
         return 2

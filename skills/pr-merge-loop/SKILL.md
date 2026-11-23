@@ -26,6 +26,8 @@ python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" status <PR> [--repo owner
 python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" wait <PR> [--repo owner/name]     # 내가 할 일이 생길 때까지 기다림
 ```
 `python` 이 없는 환경에서는 `python3` 로 바꿔 실행한다. 표준 라이브러리만 쓰므로 설치할 것은 없다.
+파이썬이 하한보다 낮으면 스크립트가 더 새 인터프리터를 찾아 같은 명령을 넘기고, 하나도 없으면
+`{"event": "error", "hint": "... 설치 명령"}` 을 돌려준다. 그 명령을 사용자에게 전하고 지시를 기다린다.
 
 진행 상태는 PR 코멘트 첫 줄의 표시로 남긴다(pr-review-loop 과 같은 형식). `round` 는 그 step 의 순번이고 `markers.next.<step>` 값을 쓴다.
 `sha` 는 코멘트를 올리는 시점의 head 다.
