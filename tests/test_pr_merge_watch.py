@@ -1239,7 +1239,9 @@ class ReviewRegressionTest(unittest.TestCase):
         )
         self.assertEqual(status, 0, text)
         self.assertEqual([out["event"], fake.calls], ["merged", 2])
-        self.assertRegex(err, r"gh 호출 실패 \(1/10\)")
+        # the type has to reach the log line, not just _describe(): without it the line
+        # reads "gh 호출 실패 (1/10): 'viewer'" and blames gh for a defect of ours
+        self.assertRegex(err, r"gh 호출 실패 \(1/10\): TypeError")
 
     def test_timed_events_reads_the_same_snake_case_options_as_everything_else(self):
         """mode_of returns no_auto; a camelCase read was silently ignoring it.
@@ -1372,7 +1374,10 @@ class PortabilityTest(unittest.TestCase):
 
     def test_the_declared_python_floor_is_the_one_ci_runs(self):
         """A floor that nothing runs is the defect this repo's sibling already shipped."""
-        workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+        path = ROOT / ".github" / "workflows" / "test.yml"
+        if not path.exists():
+            self.skipTest("no workflow in this copy")
+        workflow = path.read_text(encoding="utf-8")
         found = set(re.findall(r'"(\d+\.\d+)"', workflow))
         # by number, not by string: "3.11" sorts before "3.9" lexicographically
         in_ci = sorted(found, key=lambda v: tuple(int(n) for n in v.split(".")))

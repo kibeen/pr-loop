@@ -185,6 +185,13 @@ def now_iso() -> str:
 
 
 def trim(s) -> str:
+    """Shorten a body to BODY_LIMIT, telling the reader where the rest is.
+
+    One deliberate difference from the Node version: it measured JavaScript's
+    .length, which counts UTF-16 units, so an emoji cost two. This counts code
+    points. Only the cut point of an over-long body moves, and reproducing the
+    old count faithfully would mean slicing surrogate pairs in half.
+    """
     t = (s or "").strip()
     if len(t) > BODY_LIMIT:
         return t[:BODY_LIMIT] + "\n…(%d more characters, open the url)" % (len(t) - BODY_LIMIT)
