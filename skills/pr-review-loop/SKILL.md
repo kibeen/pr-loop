@@ -16,7 +16,7 @@ description: 코드를 바꾼 구현을 마치고 PR 을 올릴 때 변경 크�
 PoC 평가(7단계의 1-2)만 건너뛴다. 머지 진행 조건(7단계의 4)은 똑같이 적용한다.
 
 모든 코멘트 첫 줄에는 단계 표시를 넣는다. 다음 세션이 이 표시로 진행 상태를 이어받는다.
-`<!-- pr-review-loop step=<review|fix|ci|poc|close> round=<N> sha=<head 커밋> -->`
+`<!-- pr-review-loop step=<review|fix|ci|poc|hold|close> round=<N> sha=<head 커밋> -->`
 `round` 는 그 step 의 순번이고(리뷰 라운드, CI 실패 횟수, 평가 코멘트 순번) `sha` 는 코멘트를 올릴 때의 head 다.
 평가한 커밋은 head 와 다를 수 있으므로 평가 코멘트의 본문에 적는다.
 (`open`, `feedback` 표시는 머지 진행을 시작한 뒤 `pr-merge-loop` 가 쓴다. `hold` 는 사용자에게 묻고 기다릴 때 쓰고, 이 절차는 7단계의 5 에서 쓴다.)

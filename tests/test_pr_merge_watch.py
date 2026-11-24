@@ -889,6 +889,13 @@ class ModeTest(unittest.TestCase):
                         [required_run, running("e2e")]), skip_ok=["Docs"])
             self.assertEqual(working["checks"]["optional"]["pending"], ["e2e"])
             self.assertEqual(w.timed_events(working, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
+            # The optional check failed instead: that is ci_failed (from classify), not a missing CI.
+            broken = w.build_snapshot(
+                payload({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {},
+                        [required_run, bad("e2e")]), skip_ok=["Docs"])
+            self.assertEqual([c["name"] for c in broken["checks"]["optional"]["failed"]], ["e2e"])
+            self.assertEqual(w.timed_events(broken, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
+            self.assertEqual(w.classify(broken, **waived), ["ci_failed"])
         # A check still running is a wait, not a missing CI.
         pending = snap({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {}, [running("lint")])
         self.assertEqual(w.timed_events(pending, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
@@ -1061,6 +1068,10 @@ class MarkersTest(unittest.TestCase):
             [asked["markers"]["hold"], asked["markers"]["acceptedSha"], asked["markers"]["reevaluating"]],
             ["h1", None, False],
         )
+        # The PR is still a draft, but what it waits for is the answer, not `gh pr ready`.
+        self.assertEqual(w.classify(asked), ["hold"])
+        self.assertRegex(w.hint(with_event(asked, "hold")), "보류")
+        self.assertEqual(w.classify(snap({"isDraft": True})), ["draft"])
         # The user asked for another evaluation: the review loop's markers after the hold say so.
         again = snap({"isDraft": True, "comments": {"nodes": [
             mark("h1", "step=hold round=1 sha=a1b2c3d", "2026-01-01T00:00:00Z"),
