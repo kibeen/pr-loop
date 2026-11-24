@@ -9,8 +9,8 @@ description: pr-review-loop 의 머지 진행 조건(리뷰 self-approve, CI 통
 PR 이 `MERGED` 가 되면 끝난다.
 
 시작 조건은 둘 중 하나다.
-- `pr-review-loop` 7단계의 4 가 찼다: 지금 head 의 self-approve, CI 통과, 평가 계획이 있으면 `기준 충족` 판정.
-  이때는 사용자에게 묻지 않고 시작한다.
+- `pr-review-loop` 7단계의 4 가 찼다: 지금 head 의 self-approve, CI 통과(돌아서 통과한 체크 1건 이상), 평가 계획이 있으면
+  `기준 충족` 판정과 리뷰어의 `평가 확인: 동의`, PR 본문에 `머지 전 사용자 확인` 줄 없음. 이때는 사용자에게 묻지 않고 시작한다.
 - 사용자가 이 PR 의 머지를 지시했다(멈춰 보고한 뒤의 `머지`, 이미 올라간 PR 을 머지까지 봐 달라는 요청).
 
 조건이 차지 않았는데 결과가 좋아 보인다는 이유로 시작하지 않는다. 리뷰어의 Approve 와 사용자의 무응답도 시작 조건이 아니다.
@@ -87,7 +87,7 @@ auto-merge 는 base 브랜치가 **필수로 정한** 리뷰와 체크만 기다
 `draft` 가 나오면 1단계의 `gh pr ready` 가 안 된 것이고, `closed` 면 PR 이 닫힌 것이다.
 
 리뷰가 필수가 아닌 base(`no_review`, 리뷰를 요구하지 않는 `not_allowed`)에서는 아래 순서로 `mode` 를 정해 open 코멘트를 올리고 3단계로 간다.
-1. 요청된 사람 리뷰어가 있다(`review.requested` 에서 봇 계정은 뺀다. `manual` 은 사람의 승인만 치므로 봇만 있으면 영영 기다린다):
+1. 요청된 사람 리뷰어가 있다(`review.requestedPeople`. 봇은 들어 있지 않다. `manual` 은 사람의 승인만 치므로 봇만 요청된 PR 은 기다릴 사람이 없다):
    `mode=manual`. 그 사람의 승인을 기다렸다가 내가 머지한다.
 2. 요청된 사람 리뷰어가 없지만 레포 규칙이 리뷰어를 정해 두었다: 그 리뷰어를 요청하고(`gh pr edit <PR> --add-reviewer <login>`) `mode=manual`.
 3. 요청된 사람 리뷰어가 없고 `repo.personal` 이 true 다(`gh` 계정 본인 소유의 개인 저장소, 리뷰할 사람이 없다): `mode=unreviewed`.
@@ -95,8 +95,18 @@ auto-merge 는 base 브랜치가 **필수로 정한** 리뷰와 체크만 기다
 4. 그 밖(남의 저장소나 조직 저장소인데 리뷰할 사람이 정해지지 않았다): hold 코멘트를 올리고 묻는다(지금 CI 상태도 함께).
    **리뷰 없이 머지**(`mode=unreviewed`) / **리뷰 승인 뒤 머지**(`mode=manual`, 리뷰어를 받아 요청한다) / **그대로 둠**(open 코멘트 없이 보류를 둔 채 보고하고 끝낸다).
 
-어느 `mode` 든 실패한 CI 를 둔 채 머지하지 않는다. `mode=unreviewed` 는 체크가 유일한 관문이므로 이 head 에 체크가 하나도 돌지 않았으면
-머지하지 않는다. 그때는 `ready` 대신 `ci_not_started` 가 온다.
+어느 `mode` 든 실패한 CI 를 둔 채 머지하지 않는다. `mode=unreviewed` 는 체크가 유일한 관문이므로 이 head 에서 실제로 돌아 통과한 체크가
+하나도 없으면(`checks.succeeded` 가 0: 붙지 않았거나 skip 만 됐다) 머지하지 않는다. 그때는 `ready` 대신 `ci_not_started` 가 온다.
+
+**CI 가 없는 저장소**: 돌릴 CI 가 없으면 스스로 머지하지 않고 멈춰 보고한다. 사용자가 그 보고를 받고 `CI 없이 머지` 를 지시했을 때만
+`mode=unreviewed` open 코멘트의 본문에 `사용자 지시: CI 없이 머지` 를 적고 직접 머지한다(`gh pr merge <PR> --<방식>`).
+이때는 `ready` 가 오지 않으므로 기다리지 않는다. 머지 전에 `status` 로 실패했거나 진행 중인 체크가 없고, 변경 요청과 충돌이 없는지 본다.
+이 지시는 그 PR 한 건에만 해당한다.
+
+**사용자가 머지를 멈추라고 할 때**(진행 중 언제든): auto-merge 가 켜져 있으면 먼저 끈다(`gh pr merge <PR> --disable-auto`).
+hold 코멘트(`보류: 사용자 지시로 머지 중지.`)를 올리고 PR 본문의 진행 상태 절에 `머지 전 사용자 확인: <사유>` 줄을 넣는다.
+감시는 `hold` 에서 멈추고, 다음 세션도 `markers.hold` 로 이 보류를 읽는다. 사용자가 다시 머지를 지시하면 본문의 줄을 지우고
+open 코멘트(`재개: 사용자 지시`)로 보류를 닫은 뒤 2단계부터 다시 한다.
 
 hold 코멘트는 질문을 한 줄로 적는다.
 ```
@@ -128,7 +138,7 @@ hold 코멘트는 질문을 한 줄로 적는다.
 | `feedback` | 3.2 |
 | `behind`, `conflict` | 3.3 |
 | `hold` | 사용자 결정을 기다리는 보류가 열려 있다. `autoMerge.enabled` 가 true 면 먼저 끈다. 답을 받기 전에는 `wait` 를 다시 띄우지 않는다 |
-| `ci_not_started` | `checks.missingRequired`(보고되지 않음)나 `checks.skipped`(skip 만 됨)의 필수 체크가 돌지 않았다. `mode=unreviewed` 에서는 체크가 하나도 없을 때도 온다(이때는 `--skip-ok` 로 넘기지 않고, 돌릴 CI 가 없으면 멈춰 보고한다). 레포의 CI 실행 규칙대로 돌린다. 그 skip 이 레포에서 정상이면 `--skip-ok=<체크 이름,...>` 을 붙여 다시 `wait`. 규칙을 모르면 보고한다 |
+| `ci_not_started` | `checks.missingRequired`(보고되지 않음)나 `checks.skipped`(skip 만 됨)의 필수 체크가 돌지 않았다. `mode=unreviewed` 에서는 돌아서 통과한 체크가 하나도 없을 때도 온다(이때는 `--skip-ok` 로 넘기지 않는다. 돌릴 CI 가 없으면 2단계의 "CI 가 없는 저장소" 대로 멈춰 보고한다). 레포의 CI 실행 규칙대로 돌린다. 그 skip 이 레포에서 정상이면 `--skip-ok=<체크 이름,...>` 을 붙여 다시 `wait`. 규칙을 모르면 보고한다 |
 | `ready` | (`mode=manual`, `unreviewed`) 머지 조건이 찼다. `gh pr merge <PR> --<방식>`. 머지가 실패하면 다시 `wait` 하지 않고 오류를 보고한다 |
 | `auto_merge_off` | `autoMerge.disabledBy` 가 있으면 누군가 끈 것이다. 다시 켜지 않고 보고한다. 없으면 켠 적이 없는 것이니 2단계를 한다 |
 | `auto_merge_unsafe` | auto-merge 가 켜져 있는데 리뷰나 CI 를 기다려 주지 않는 상태가 됐다(예: 푸시로 승인이 낡음). 먼저 끄고 2단계의 표를 다시 따른다 |

@@ -463,6 +463,8 @@ def summarize_checks(checks, required_contexts=None, skip_ok=False):
     return {
         "gating": "required" if any_required else "all",
         "total": len(checks),
+        # Checks that actually ran and passed (a skipped or neutral check did not run anything).
+        "succeeded": len([c for c in checks if c["state"] == "pass"]),
         "passed": len([c for c in gating if c["state"] in ("pass", "skip")]),
         "pending": [c["name"] for c in gating if c["state"] == "pending"],
         "failed": [view(c) for c in gating if c["state"] == "fail"],
@@ -805,9 +807,10 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
         events.append("auto_merge_unsafe")
     # Without auto-merge the agent is the only gate: a person approved this head (unless nobody
     # reviews), every check passed, and GitHub calls the PR mergeable. With no reviewer the checks are
-    # all that stands between the branch and the merge, so "no check at all" is not "every check passed".
+    # all that stands between the branch and the merge, so "no check passed" (none attached, or only
+    # skipped and neutral ones) is not "every check passed".
     reviewed = (not s["review"]["changesRequested"]) if no_review else _person_approved(s)
-    ran = s["checks"]["total"] > 0 or not no_review
+    ran = s["checks"]["succeeded"] > 0 or not no_review
     if (
         no_auto and not hold and reviewed and ran and _checks_ok(s)
         and s["pr"]["mergeStateStatus"] in IMMEDIATELY_MERGEABLE
@@ -837,8 +840,12 @@ def timed_events(s, opts, since, now, grace_ms):
         "ci_not_started",
         open_pr and (
             len(s["checks"]["missingRequired"]) > 0 or len(s["checks"]["skipped"]) > 0
-            # mode=unreviewed with no check on the head: nothing would ever make the PR ready.
-            or (no_review and s["checks"]["total"] == 0)
+            # mode=unreviewed and nothing ran: no check attached, or only skipped and neutral ones.
+            # Nothing would ever make the PR ready.
+            or (
+                no_review and s["checks"]["succeeded"] == 0
+                and not s["checks"]["pending"] and not s["checks"]["failed"]
+            )
         ),
     ):
         events.append("ci_not_started")
@@ -966,6 +973,18 @@ def build_snapshot(data, rulesets=None, extra_contexts=None, skip_ok=False):
                     for n in ((pr.get("reviewRequests") or {}).get("nodes") or [])
                 ) if login
             ],
+            # The same without bots: a bot's approval never makes a manual merge ready, so a PR that
+            # only a bot was asked to review has nobody to wait for.
+            "requestedPeople": [
+                login for kind, login in (
+                    (
+                        (n.get("requestedReviewer") or {}).get("__typename"),
+                        (n.get("requestedReviewer") or {}).get("login")
+                        or (n.get("requestedReviewer") or {}).get("slug"),
+                    )
+                    for n in ((pr.get("reviewRequests") or {}).get("nodes") or [])
+                ) if login and kind != "Bot"
+            ],
             "unresolvedThreads": len([t for t in threads if not t.get("isResolved")]),
         },
         "checks": checks,
@@ -1067,8 +1086,14 @@ def hint(s, no_auto=False, no_review=False):
         return "%s 모두 찼다. auto-merge 없이 감시 중이므로 직접 머지할 차례다." % (
             "체크가" if no_review else "승인과 체크가"
         )
-    if event == "ci_not_started" and not s["checks"]["total"]:
-        return "이 커밋에 붙은 체크가 하나도 없다. 리뷰 없이 머지하는 PR 은 체크가 돌아야 머지한다: 레포의 CI 실행 규칙을 확인한다."
+    if (
+        event == "ci_not_started" and no_review and not s["checks"]["succeeded"]
+        and not s["checks"]["missingRequired"] and not s["checks"]["skipped"]
+    ):
+        return (
+            "이 커밋에서 실제로 돌아 통과한 체크가 하나도 없다 (붙은 체크 %d건). 리뷰 없이 머지하는 PR 은 "
+            "체크가 돌아야 머지한다: 레포의 CI 실행 규칙을 확인한다." % s["checks"]["total"]
+        )
     if event == "ci_not_started":
         return "필수 체크가 돌지 않았다: %s. 레포의 CI 실행 규칙(라벨, 수동 실행)을 확인한다." % names(
             list(s["checks"]["missingRequired"]) + list(s["checks"]["skipped"])

@@ -866,7 +866,28 @@ class ModeTest(unittest.TestCase):
         since = {}
         self.assertEqual(w.timed_events(bare, waived, since, 0, 600_000), [])
         self.assertEqual(w.timed_events(bare, waived, since, 600_000, 600_000), ["ci_not_started"])
-        self.assertRegex(w.hint(with_event(bare, "ci_not_started"), **waived), "체크가 하나도 없다")
+        self.assertRegex(w.hint(with_event(bare, "ci_not_started"), **waived), "통과한 체크가 하나도 없다")
+        # A check that only skipped (or ended neutral) ran nothing either.
+        for conclusion in ("SKIPPED", "NEUTRAL"):
+            idle = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {},
+                        [check_run("Unit Tests", "COMPLETED", conclusion)])
+            self.assertEqual([idle["checks"]["total"], idle["checks"]["succeeded"]], [1, 0], conclusion)
+            self.assertEqual(w.classify(idle, **waived), [], conclusion)
+            self.assertEqual(w.timed_events(idle, waived, {"ci_not_started": 0}, 600_000, 600_000),
+                             ["ci_not_started"], conclusion)
+            self.assertRegex(w.hint(with_event(idle, "ci_not_started"), **waived), "통과한 체크가 하나도 없다")
+        # One real pass next to a skip is enough.
+        mixed = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {},
+                     [check_run("Docs", "COMPLETED", "SKIPPED"), ok("lint")])
+        self.assertEqual(w.classify(mixed, **waived), ["ready"])
+        # A check still running is a wait, not a missing CI.
+        pending = snap({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {}, [running("lint")])
+        self.assertEqual(w.timed_events(pending, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
+        # In the other modes a required check that never reported keeps its own hint with the check's name.
+        missing = snap({}, {}, [], [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "Unit Tests"}]}}])
+        self.assertRegex(w.hint(with_event(missing, "ci_not_started")), "필수 체크가 돌지 않았다: Unit Tests")
+        self.assertRegex(w.hint(with_event(missing, "ci_not_started"), **waived), "필수 체크가 돌지 않았다: Unit Tests")
         # A person approved the head: zero checks is that reviewer's call, as before.
         approved = snap(dict({"mergeStateStatus": "CLEAN", "reviewDecision": None}, **approved_by("bob")), {}, [])
         self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
@@ -965,6 +986,15 @@ class MarkersTest(unittest.TestCase):
             "next": {"open": 2, "hold": 1, "ci": 1, "feedback": 1},
         })
         self.assertEqual(s["review"]["requested"], ["jane", "core"])
+        self.assertEqual(s["review"]["requestedPeople"], ["jane", "core"])
+        bots = snap({"reviewRequests": {"nodes": [
+            {"requestedReviewer": {"__typename": "Bot", "login": "review-bot"}},
+            {"requestedReviewer": {"__typename": "User", "login": "jane"}},
+        ]}})
+        self.assertEqual(
+            [bots["review"]["requested"], bots["review"]["requestedPeople"]],
+            [["review-bot", "jane"], ["jane"]],
+        )
         self.assertRegex(
             w.hint(with_event(s, "waiting")),
             r"체크 진행 중: Unit Tests / 리뷰 승인 대기 \(요청: jane, core\)",
