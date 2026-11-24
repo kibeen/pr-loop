@@ -7,8 +7,9 @@
 
 --no-auto: the agent merges by itself once a person approved the head (no auto-merge). It is
   implied when the PR's last `step=open` marker says `mode=manual`.
---no-review: as --no-auto, but the user waived the review: ready once every check passed.
-  Implied by `mode=unreviewed`.
+--no-review: as --no-auto, but nobody reviews (the account's own personal repository, or the user
+  waived the review): ready once every check passed, and at least one check ran. Implied by
+  `mode=unreviewed`.
 --skip-ok[=check,...]: a required check that only ever SKIPPED is what this repository intends
   (e.g. a path filter), not CI that failed to start. Without names it applies to every check.
 
@@ -646,7 +647,8 @@ def summarize_markers(markers):
         "last": last_view,
         "acceptedSha": (opened or {}).get("sha") or None,
         # auto: GitHub merges. manual: the agent merges after a person approved the head and checks passed.
-        # unreviewed: the user chose to merge without a review; the agent merges once checks passed.
+        # unreviewed: nobody reviews (a personal repository, or the user waived it); the agent merges once
+        # checks passed.
         "mode": mode,
         "hold": gate.get("url") if gate and gate.get("step") == "hold" else None,
         # The hold asked whether to re-evaluate and the review loop has run since (its CI comments may come last).
@@ -801,11 +803,13 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
         and s["autoMerge"]["effect"] in UNSAFE_EFFECTS
     ):
         events.append("auto_merge_unsafe")
-    # Without auto-merge the agent is the only gate: a person approved this head (unless the user
-    # waived the review), every check passed, and GitHub calls the PR mergeable.
+    # Without auto-merge the agent is the only gate: a person approved this head (unless nobody
+    # reviews), every check passed, and GitHub calls the PR mergeable. With no reviewer the checks are
+    # all that stands between the branch and the merge, so "no check at all" is not "every check passed".
     reviewed = (not s["review"]["changesRequested"]) if no_review else _person_approved(s)
+    ran = s["checks"]["total"] > 0 or not no_review
     if (
-        no_auto and not hold and reviewed and _checks_ok(s)
+        no_auto and not hold and reviewed and ran and _checks_ok(s)
         and s["pr"]["mergeStateStatus"] in IMMEDIATELY_MERGEABLE
     ):
         events.append("ready")
@@ -818,6 +822,7 @@ def timed_events(s, opts, since, now, grace_ms):
     `since` carries the first time each condition was seen across polls.
     """
     no_auto = (opts or {}).get("no_auto", False)
+    no_review = (opts or {}).get("no_review", False)
 
     def held(name, active):
         if not active:
@@ -830,7 +835,11 @@ def timed_events(s, opts, since, now, grace_ms):
     events = []
     if held(
         "ci_not_started",
-        open_pr and (len(s["checks"]["missingRequired"]) > 0 or len(s["checks"]["skipped"]) > 0),
+        open_pr and (
+            len(s["checks"]["missingRequired"]) > 0 or len(s["checks"]["skipped"]) > 0
+            # mode=unreviewed with no check on the head: nothing would ever make the PR ready.
+            or (no_review and s["checks"]["total"] == 0)
+        ),
     ):
         events.append("ci_not_started")
     # Everything we can see is green and auto-merge is on, yet GitHub has not merged (a merge queue is a normal wait).
@@ -1058,6 +1067,8 @@ def hint(s, no_auto=False, no_review=False):
         return "%s 모두 찼다. auto-merge 없이 감시 중이므로 직접 머지할 차례다." % (
             "체크가" if no_review else "승인과 체크가"
         )
+    if event == "ci_not_started" and not s["checks"]["total"]:
+        return "이 커밋에 붙은 체크가 하나도 없다. 리뷰 없이 머지하는 PR 은 체크가 돌아야 머지한다: 레포의 CI 실행 규칙을 확인한다."
     if event == "ci_not_started":
         return "필수 체크가 돌지 않았다: %s. 레포의 CI 실행 규칙(라벨, 수동 실행)을 확인한다." % names(
             list(s["checks"]["missingRequired"]) + list(s["checks"]["skipped"])

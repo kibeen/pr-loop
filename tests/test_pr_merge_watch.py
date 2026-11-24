@@ -857,6 +857,21 @@ class ModeTest(unittest.TestCase):
         # auto-merge is not expected in this mode, so its absence is not an event
         self.assertNotIn("auto_merge_off", w.classify(snap({}), no_auto=True))
 
+    def test_no_review_with_no_check_at_all_is_not_ready_and_asks_for_ci(self):
+        """With no reviewer the checks are the only gate: zero checks must not read as all passed."""
+        waived = {"no_auto": True, "no_review": True}
+        bare = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {}, [])
+        self.assertEqual(bare["checks"]["total"], 0)
+        self.assertEqual(w.classify(bare, **waived), [])
+        since = {}
+        self.assertEqual(w.timed_events(bare, waived, since, 0, 600_000), [])
+        self.assertEqual(w.timed_events(bare, waived, since, 600_000, 600_000), ["ci_not_started"])
+        self.assertRegex(w.hint(with_event(bare, "ci_not_started"), **waived), "체크가 하나도 없다")
+        # A person approved the head: zero checks is that reviewer's call, as before.
+        approved = snap(dict({"mergeStateStatus": "CLEAN", "reviewDecision": None}, **approved_by("bob")), {}, [])
+        self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
+        self.assertEqual(w.timed_events(approved, {"no_auto": True}, {}, 600_000, 600_000), [])
+
     def test_no_review_makes_green_checks_and_a_mergeable_state_enough(self):
         waived = {"no_auto": True, "no_review": True}
         self.assertEqual(

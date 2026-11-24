@@ -80,21 +80,23 @@ auto-merge 는 base 브랜치가 **필수로 정한** 리뷰와 체크만 기다
 | `not_enforced` | base 가 리뷰나 CI 중 하나를 필수로 걸지 않았다. auto-merge 는 그것을 기다리지 않는다(승인만으로 CI 없이, 또는 푸시로 승인이 낡아도 그대로 머지) | 켜지 않는다. `mode=manual` 인 open 코멘트를 올리고 3단계로 간다. 사용자에게 승인과 CI 통과 뒤 직접 머지한다고 알린다 |
 | `ci_not_run` | 필수 체크가 한 번도 실행되지 않고 skip 됐다(`checks.skipped`). GitHub 는 이것을 통과로 친다 | 레포의 CI 실행 규칙(라벨, 수동 실행)대로 CI 를 먼저 돌리고 `status` 를 다시 본다. 그 skip 이 레포에서 정상(경로 필터 등)이면 `--skip-ok=<체크 이름,...>` 을 붙인다 |
 | `ci_not_green` | GitHub 는 머지 가능으로 보지만 실행된 체크 중 통과하지 못한 것이 있다(예: 실패한 필수 체크를 뒤의 skip 된 실행이 덮음). `--auto` 는 그대로 머지한다 | 켜지 않는다. 3.1 로 CI 를 먼저 통과시키고 `status` 를 다시 본다 |
-| `not_allowed` | 저장소가 auto-merge 를 꺼 두었다 | 켤 수 없으므로 내가 머지한다. base 가 리뷰를 요구하면 `mode=manual`, 아니면 아래 "리뷰가 필수가 아닌 base" 대로 `mode` 를 정한다 |
+| `not_allowed` | 저장소가 auto-merge 를 꺼 두었다 | 켤 수 없으므로 내가 머지한다. base 가 리뷰를 요구하면(`rules.requiredApprovals` 가 1 이상이거나 `review.decision` 이 null 이 아니다) `mode=manual`, 아니면 아래 "리뷰가 필수가 아닌 base" 대로 `mode` 를 정한다 |
 | `enabled` | 이미 켜져 있고 리뷰와 필수 체크를 기다린다 | `autoMerge.method` 가 맞는지만 확인 |
 | `unknown` | GitHub 가 아직 계산 중이다 | `status` 를 다시 돌린다 |
 
 `draft` 가 나오면 1단계의 `gh pr ready` 가 안 된 것이고, `closed` 면 PR 이 닫힌 것이다.
 
 리뷰가 필수가 아닌 base(`no_review`, 리뷰를 요구하지 않는 `not_allowed`)에서는 아래 순서로 `mode` 를 정해 open 코멘트를 올리고 3단계로 간다.
-1. 요청된 리뷰어가 있다(`review.requested`): `mode=manual`. 그 사람의 승인을 기다렸다가 내가 머지한다.
-2. 요청된 리뷰어가 없지만 레포 규칙이 리뷰어를 정해 두었다: 그 리뷰어를 요청하고(`gh pr edit <PR> --add-reviewer <login>`) `mode=manual`.
-3. 요청된 리뷰어가 없고 `repo.personal` 이 true 다(`gh` 계정 본인 소유의 개인 저장소, 리뷰할 사람이 없다): `mode=unreviewed`.
+1. 요청된 사람 리뷰어가 있다(`review.requested` 에서 봇 계정은 뺀다. `manual` 은 사람의 승인만 치므로 봇만 있으면 영영 기다린다):
+   `mode=manual`. 그 사람의 승인을 기다렸다가 내가 머지한다.
+2. 요청된 사람 리뷰어가 없지만 레포 규칙이 리뷰어를 정해 두었다: 그 리뷰어를 요청하고(`gh pr edit <PR> --add-reviewer <login>`) `mode=manual`.
+3. 요청된 사람 리뷰어가 없고 `repo.personal` 이 true 다(`gh` 계정 본인 소유의 개인 저장소, 리뷰할 사람이 없다): `mode=unreviewed`.
    묻지 않는다. 모든 체크가 통과하면 `ready` 가 오고 그때 내가 머지한다.
 4. 그 밖(남의 저장소나 조직 저장소인데 리뷰할 사람이 정해지지 않았다): hold 코멘트를 올리고 묻는다(지금 CI 상태도 함께).
    **리뷰 없이 머지**(`mode=unreviewed`) / **리뷰 승인 뒤 머지**(`mode=manual`, 리뷰어를 받아 요청한다) / **그대로 둠**(open 코멘트 없이 보류를 둔 채 보고하고 끝낸다).
 
-어느 `mode` 든 실패한 CI 를 둔 채 머지하지 않는다.
+어느 `mode` 든 실패한 CI 를 둔 채 머지하지 않는다. `mode=unreviewed` 는 체크가 유일한 관문이므로 이 head 에 체크가 하나도 돌지 않았으면
+머지하지 않는다. 그때는 `ready` 대신 `ci_not_started` 가 온다.
 
 hold 코멘트는 질문을 한 줄로 적는다.
 ```
@@ -126,7 +128,7 @@ hold 코멘트는 질문을 한 줄로 적는다.
 | `feedback` | 3.2 |
 | `behind`, `conflict` | 3.3 |
 | `hold` | 사용자 결정을 기다리는 보류가 열려 있다. `autoMerge.enabled` 가 true 면 먼저 끈다. 답을 받기 전에는 `wait` 를 다시 띄우지 않는다 |
-| `ci_not_started` | `checks.missingRequired`(보고되지 않음)나 `checks.skipped`(skip 만 됨)의 필수 체크가 돌지 않았다. 레포의 CI 실행 규칙대로 돌린다. 그 skip 이 레포에서 정상이면 `--skip-ok=<체크 이름,...>` 을 붙여 다시 `wait`. 규칙을 모르면 보고한다 |
+| `ci_not_started` | `checks.missingRequired`(보고되지 않음)나 `checks.skipped`(skip 만 됨)의 필수 체크가 돌지 않았다. `mode=unreviewed` 에서는 체크가 하나도 없을 때도 온다(이때는 `--skip-ok` 로 넘기지 않고, 돌릴 CI 가 없으면 멈춰 보고한다). 레포의 CI 실행 규칙대로 돌린다. 그 skip 이 레포에서 정상이면 `--skip-ok=<체크 이름,...>` 을 붙여 다시 `wait`. 규칙을 모르면 보고한다 |
 | `ready` | (`mode=manual`, `unreviewed`) 머지 조건이 찼다. `gh pr merge <PR> --<방식>`. 머지가 실패하면 다시 `wait` 하지 않고 오류를 보고한다 |
 | `auto_merge_off` | `autoMerge.disabledBy` 가 있으면 누군가 끈 것이다. 다시 켜지 않고 보고한다. 없으면 켠 적이 없는 것이니 2단계를 한다 |
 | `auto_merge_unsafe` | auto-merge 가 켜져 있는데 리뷰나 CI 를 기다려 주지 않는 상태가 됐다(예: 푸시로 승인이 낡음). 먼저 끄고 2단계의 표를 다시 따른다 |
@@ -236,7 +238,8 @@ hold 코멘트는 질문을 한 줄로 적는다.
    - **바꾸지 않음, 후속 PR**: 선택만 받고 문안 승인을 못 받았으면 문안을 다시 보여 승인받는다. 그때까지 보류를 닫지 않는다
      (open 코멘트도 auto-merge 도 없다). 승인된 문안 그대로 해당 스레드에 답한 뒤에 2단계 표대로 auto-merge 를 다시 켠다.
      open 코멘트(`sha=<지금 head>`, 본문은 `재개: <결정>`)를 올려 보류를 닫고, 3.2 의 4번을 한 뒤 3단계로 돌아간다.
-   - **반영하고 재평가**: 먼저 `평가 무효: 커밋 <옛 평가 커밋>, 사용자 지시 재평가.` 코멘트(step=poc)를 올리고 pr-review-loop 2단계부터
+   - **반영하고 재평가**: 먼저 `평가 무효: 커밋 <옛 평가 커밋>, 사용자 지시 재평가.` 코멘트(step=poc)를 올리고(평가가 없던 PR 이면
+     커밋 자리에 기준 커밋을 적는다) pr-review-loop 2단계부터
      다시 한다(수정, 리뷰, CI 와 평가, 머지 진행 판정). 리뷰 라운드 상한은 새로 7회다. 그 7단계의 4 가 다시 차면 1단계부터 한다.
 
 ## 4. 끝
@@ -247,6 +250,6 @@ hold 코멘트는 질문을 한 줄로 적는다.
 
 ## 멈추고 사용자에게 보고할 때
 프로젝트 규칙이 요구하는 허락(릴리스 브랜치 머지 등), 리뷰할 사람이 정해지지 않은 남의 저장소(2단계의 4), 3.4 의 동작 변경, 같은 체크의 3회 실패, PR 과 무관한 실패의 재실패,
-남이 끈 `auto_merge_off`, 남이 되돌린 `draft`, 직접 머지의 실패, 원인을 못 찾은 `stuck`, `closed`.
+`mode=unreviewed` 에서 돌릴 CI 가 없는 `ci_not_started`, 남이 끈 `auto_merge_off`, 남이 되돌린 `draft`, 직접 머지의 실패, 원인을 못 찾은 `stuck`, `closed`.
 보고에는 PR 링크, 지금 상태(`hint`), 선택지를 넣는다.
 3.2 의 `안 고침` 문안은 사용자에게 묻되 감시는 멈추지 않는다.
