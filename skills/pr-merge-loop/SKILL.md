@@ -40,7 +40,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" wait <PR> [--repo owner/n
 
 | step | 뜻 | 언제 올리나 |
 |---|---|---|
-| `open` | 머지 진행을 시작했다. 마지막 `open` 의 sha 가 절차를 채운 커밋(기준 커밋, 필드 이름은 `markers.acceptedSha`)이다. `mode=auto\|manual\|unreviewed` 를 덧붙인다 | 진행을 시작할 때(1단계), 머지 방식을 바꿀 때, 보류가 풀려 다시 진행할 때 |
+| `open` | 머지 진행을 시작했다. 마지막 `open` 의 sha 가 절차를 채운 커밋(기준 커밋, 필드 이름은 `markers.acceptedSha`)이다. `mode=auto\|manual\|unreviewed` 를 덧붙인다 | 2단계에서 `mode` 를 정한 뒤(진행을 시작할 때, `mode` 가 바뀔 때, 보류가 풀려 다시 진행할 때) |
 | `hold` | 사용자 결정을 기다린다. 머지하지 않는다 | 사용자에게 물을 때(프로젝트 규칙의 허락, 2단계의 선택과 멈춤, 3.4, pr-review-loop 7단계의 5). 다음 `open` 이 보류를 닫는다 |
 | `ci` | CI 실패를 처리했다 | 3.1 |
 | `feedback` | 리뷰어 코멘트를 처리했다. `until=<시각>` 을 덧붙인다. `안 고침` 문안이 사용자 승인을 기다리는 항목은 `ask=<id,...>` 로 적는다 | 3.2 |
@@ -80,9 +80,10 @@ auto-merge 는 base 브랜치가 **필수로 정한** 리뷰와 체크만 기다
 진행: <근거>. 기준 커밋 <sha>, 머지 방식 <방식>, mode <mode>(<그 mode 인 이유>).
 ```
 `<근거>` 는 `절차 충족(리뷰 self-approve 라운드 <N>, CI 통과, 평가 <기준 충족 | 없음>)`, `사용자 지시`, `사용자 지시: CI 없이 머지` 중 하나다.
-보류를 닫고 다시 진행할 때도 open 코멘트는 여기서 `mode` 를 정한 뒤 한 번 올린다. 그때는 `진행:` 대신 `재개: <결정>.` 으로 시작한다.
-마지막 open 코멘트가 지금 head 와 같은 `mode` 의 것이고 그 뒤에 hold 가 없으면(예: 켠 적이 없는 auto-merge 를 다시 켜러 온 경우)
-open 코멘트를 다시 올리지 않고 머지 쪽 명령만 실행한다.
+보류를 닫고 다시 진행할 때도 open 코멘트는 여기서 `mode` 를 정한 뒤 한 번 올린다. 그때는 `진행:` 대신 `재개:` 로 시작한다
+(예: `재개: 사용자 지시. 기준 커밋 <sha>, 머지 방식 squash, mode unreviewed(사용자가 리뷰 없이 머지를 고름).`).
+이미 올린 open 코멘트를 되풀이하지 않는다. 마지막 open 코멘트의 `sha` 가 지금 head 이고 `mode` 가 지금 정한 것과 같으며
+그 뒤에 hold 코멘트가 없으면(예: 켠 적이 없는 auto-merge 를 켜러 다시 온 경우) open 코멘트 없이 머지 쪽 명령만 실행한다.
 
 | `autoMerge.effect` | 뜻 | 할 일 |
 |---|---|---|
@@ -90,8 +91,8 @@ open 코멘트를 다시 올리지 않고 머지 쪽 명령만 실행한다.
 | `merges_now` | 사람이 승인했고 체크도 다 찼다. 켜는 순간 머지된다 | `arms` 와 같다(`mode=auto` open 코멘트, 그다음 같은 명령). 규칙이 허용하고 절차를 채운 머지다 |
 | `no_review` | base 가 리뷰를 요구하지 않고 이 커밋을 승인한 사람도 없다. `--auto` 는 **리뷰 없이** 머지한다(지금 바로, 또는 필수 체크가 통과하는 즉시) | 실행하지 않는다. 아래 "리뷰가 필수가 아닌 base" 대로 `mode` 를 정한다 |
 | `not_enforced` | 승인한 사람은 있는데 base 가 리뷰를 필수로 걸지 않았거나, 체크가 붙어 있는데 필수로 지정된 것이 없다(체크가 하나도 없는 저장소는 여기에 들지 않고 `arms` 나 `merges_now` 다). auto-merge 는 필수가 아닌 것을 기다리지 않는다(승인만으로 CI 없이, 또는 푸시로 승인이 낡아도 그대로 머지) | 켜지 않는다. `mode=manual` open 코멘트를 올리고 3단계로 간다. 사용자에게 승인과 CI 통과 뒤 직접 머지한다고 알린다 |
-| `ci_not_run` | 필수 체크가 한 번도 실행되지 않고 skip 됐다(`checks.skipped`). GitHub 는 이것을 통과로 친다 | 레포의 CI 실행 규칙(라벨, 수동 실행)대로 CI 를 먼저 돌리고 `status` 를 다시 본다. 그 skip 이 레포에서 정상(경로 필터 등)이면 `--skip-ok=<체크 이름,...>` 을 붙인다 |
-| `ci_not_green` | GitHub 는 머지 가능으로 보지만 실행된 체크 중 통과하지 못한 것이 있다(예: 실패한 필수 체크를 뒤의 skip 된 실행이 덮음). `--auto` 는 그대로 머지한다 | 켜지 않는다. 3.1 로 CI 를 먼저 통과시키고 `status` 를 다시 본다 |
+| `ci_not_run` | 필수 체크가 한 번도 실행되지 않고 skip 됐다(`checks.skipped`). GitHub 는 이것을 통과로 친다 | `mode=auto` open 코멘트를 먼저 올려 진행을 기록하고(auto-merge 는 켜지 않는다), 레포의 CI 실행 규칙(라벨, 수동 실행)대로 CI 를 먼저 돌리고 `status` 를 다시 본다. 그 skip 이 레포에서 정상(경로 필터 등)이면 `--skip-ok=<체크 이름,...>` 을 붙인다 |
+| `ci_not_green` | GitHub 는 머지 가능으로 보지만 실행된 체크 중 통과하지 못한 것이 있다(예: 실패한 필수 체크를 뒤의 skip 된 실행이 덮음). `--auto` 는 그대로 머지한다 | `mode=auto` open 코멘트를 먼저 올려 진행을 기록하고 auto-merge 는 켜지 않는다. 3.1 로 CI 를 먼저 통과시키고 `status` 를 다시 본다 |
 | `not_allowed` | 저장소가 auto-merge 를 꺼 두었다 | 켤 수 없으므로 내가 머지한다. base 가 리뷰를 요구하면(`rules.requiredApprovals` 가 1 이상이거나 `review.decision` 이 null 이 아니다) `mode=manual` open 코멘트를 올리고 3단계로 간다. 아니면 아래 "리뷰가 필수가 아닌 base" 대로 `mode` 를 정한다 |
 | `enabled` | 이미 켜져 있고 리뷰와 필수 체크를 기다린다 | `autoMerge.method` 가 맞는지만 확인 |
 | `unknown` | GitHub 가 아직 계산 중이다 | `status` 를 다시 돌린다 |

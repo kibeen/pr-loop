@@ -1078,6 +1078,8 @@ class MarkersTest(unittest.TestCase):
             mark("p1", "step=poc round=3 sha=a1b2c3d", "2026-01-01T01:00:00Z"),
         ]}})
         self.assertEqual([again["markers"]["hold"], again["markers"]["reevaluating"]], ["h1", True])
+        # The question was answered ("evaluate again"): the draft waits for the review loop, not for the user.
+        self.assertEqual(w.classify(again), ["draft"])
         # The merge then starts: the open comment closes the hold.
         started = snap({"comments": {"nodes": [
             mark("h1", "step=hold round=1 sha=a1b2c3d", "2026-01-01T00:00:00Z"),

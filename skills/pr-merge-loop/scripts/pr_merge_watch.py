@@ -790,7 +790,9 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
     if s["pr"]["isDraft"]:
         # A draft with an open question is waiting for the user's answer, not for `gh pr ready`:
         # pr-review-loop stops with a hold before the merge starts and leaves the PR a draft.
-        return ["hold"] if s["markers"]["hold"] else ["draft"]
+        # Once the review loop is re-evaluating (markers after the hold), the question was answered.
+        asked = s["markers"]["hold"] and not s["markers"]["reevaluating"]
+        return ["hold"] if asked else ["draft"]
     events = []
     # A question to the user is open: nothing may merge, and auto-merge is off on purpose.
     hold = bool(s["markers"]["hold"])
