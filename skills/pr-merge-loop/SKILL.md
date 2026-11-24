@@ -51,6 +51,8 @@ python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" wait <PR> [--repo owner/n
   `mode` 가 `auto` 인데 auto-merge 가 꺼져 있으면 `autoMerge.disabledBy` 를 본다. 없으면 켠 적이 없는 것이니 2단계부터 한다.
   있으면 누군가 끈 것이다. 다시 켜지 않고 사용자에게 보고한다.
 - 둘 다 없으면 아직 머지 진행 전이다. pr-review-loop 으로 돌아가 7단계의 4 가 찼는지 본다.
+- PR 본문(`gh pr view <PR> --json body`)의 진행 상태 절에 `머지 전 사용자 확인` 줄이 있는데 `markers.hold` 가 없으면, 사용자가 멈추라고 한 뒤
+  기록을 다 남기지 못한 것이다. 머지를 이어가지 않고 2단계의 "사용자가 머지를 멈추라고 할 때" 의 나머지(auto-merge 끄기, hold 코멘트)를 마저 한다.
 - `feedback.awaitingUser` 에 항목이 있으면 `안 고침` 답글 문안이 사용자 승인을 기다리는 중이다. 문안은 PR 에 남아 있지 않으므로
   다시 써서 보여 준다(3.2 의 5번). 마지막 반영 코멘트에 `답하지 않음(사용자 결정)` 으로 적힌 항목은 다시 묻지 않는다.
 
@@ -98,7 +100,8 @@ auto-merge 는 base 브랜치가 **필수로 정한** 리뷰와 체크만 기다
 어느 `mode` 든 실패한 CI 를 둔 채 머지하지 않는다. `mode=unreviewed` 는 체크가 유일한 관문이므로 이 head 에서 실제로 돌아 통과한 체크가
 하나도 없으면(`checks.succeeded` 가 0: 붙지 않았거나 skip 만 됐다) 머지하지 않는다. 그때는 `ready` 대신 `ci_not_started` 가 온다.
 
-**CI 가 없는 저장소**: 돌릴 CI 가 없으면 스스로 머지하지 않고 멈춰 보고한다. 사용자가 그 보고를 받고 `CI 없이 머지` 를 지시했을 때만
+**CI 가 없는 저장소**(`mode=unreviewed` 에만 해당한다. `auto` 와 `manual` 은 사람의 승인이 관문이라 체크가 없어도 승인을 기다려 진행한다):
+돌릴 CI 가 없으면 스스로 머지하지 않고 멈춰 보고한다. 사용자가 그 보고를 받고 `CI 없이 머지` 를 지시했을 때만
 `mode=unreviewed` open 코멘트의 본문에 `사용자 지시: CI 없이 머지` 를 적고 직접 머지한다(`gh pr merge <PR> --<방식>`).
 이때는 `ready` 가 오지 않으므로 기다리지 않는다. 머지 전에 `status` 로 실패했거나 진행 중인 체크가 없고, 변경 요청과 충돌이 없는지 본다.
 이 지시는 그 PR 한 건에만 해당한다.
