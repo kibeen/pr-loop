@@ -484,7 +484,6 @@ def summarize_checks(checks, required_contexts=None, skip_ok=False):
             if all(c["conclusion"] == "SKIPPED" for c in checks if c["name"] == name)
             and not skip_intended(name)
         ],
-        "optionalFailed": [view(c) for c in checks if not gates(c) and c["state"] == "fail"],
     }
 
 
@@ -789,7 +788,11 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
     if s["pr"]["state"] == "CLOSED":
         return ["closed"]
     if s["pr"]["isDraft"]:
-        return ["draft"]
+        # A draft with an open question is waiting for the user's answer, not for `gh pr ready`:
+        # pr-review-loop stops with a hold before the merge starts and leaves the PR a draft.
+        # Once the review loop is re-evaluating (markers after the hold), the question was answered.
+        asked = s["markers"]["hold"] and not s["markers"]["reevaluating"]
+        return ["hold"] if asked else ["draft"]
     events = []
     # A question to the user is open: nothing may merge, and auto-merge is off on purpose.
     hold = bool(s["markers"]["hold"])
@@ -853,6 +856,8 @@ def timed_events(s, opts, since, now, grace_ms):
             or (
                 no_review and s["checks"]["succeeded"] == 0
                 and not s["checks"]["pending"] and not s["checks"]["failed"]
+                # An optional check still running (or failed: that is ci_failed) is CI at work, not CI missing.
+                and not s["checks"]["optional"]["pending"] and not s["checks"]["optional"]["failed"]
             )
         ),
     ):
