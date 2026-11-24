@@ -188,7 +188,7 @@ class ChecksTest(unittest.TestCase):
         ])
         self.assertEqual(w.classify(s), ["ci_failed"])
         self.assertEqual([[c["name"], c["runId"]] for c in s["checks"]["failed"]], [["Unit Tests", 77]])
-        self.assertEqual([c["name"] for c in s["checks"]["optionalFailed"]], ["nightly-perf"])
+        self.assertEqual([c["name"] for c in s["checks"]["optional"]["failed"]], ["nightly-perf"])
         self.assertEqual(s["checks"]["gating"], "required")
 
     def test_an_optional_failure_does_not_wake_the_agent_while_required_checks_exist(self):
@@ -880,6 +880,15 @@ class ModeTest(unittest.TestCase):
         mixed = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {},
                      [check_run("Docs", "COMPLETED", "SKIPPED"), ok("lint")])
         self.assertEqual(w.classify(mixed, **waived), ["ready"])
+        # An optional check still running next to a required one that only skipped (and is accepted) or
+        # ended neutral is CI at work: no wake-up that says CI is missing.
+        for required_run in (check_run("Docs", "COMPLETED", "SKIPPED", required=True),
+                             check_run("Docs", "COMPLETED", "NEUTRAL", required=True)):
+            working = w.build_snapshot(
+                payload({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {},
+                        [required_run, running("e2e")]), skip_ok=["Docs"])
+            self.assertEqual(working["checks"]["optional"]["pending"], ["e2e"])
+            self.assertEqual(w.timed_events(working, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
         # A check still running is a wait, not a missing CI.
         pending = snap({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {}, [running("lint")])
         self.assertEqual(w.timed_events(pending, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
@@ -1041,6 +1050,31 @@ class MarkersTest(unittest.TestCase):
         # a later open closed the hold
         self.assertFalse(
             w.summarize_markers([open_m, hold, m("review"), m("open")])["reevaluating"]
+        )
+
+    def test_a_hold_before_any_open_is_an_open_question_without_an_accepted_commit(self):
+        """pr-review-loop stops with a hold before the merge started; a new session must see the question."""
+        asked = snap({"isDraft": True, "comments": {"nodes": [
+            mark("h1", "step=hold round=1 sha=a1b2c3d", "2026-01-01T00:00:00Z"),
+        ]}})
+        self.assertEqual(
+            [asked["markers"]["hold"], asked["markers"]["acceptedSha"], asked["markers"]["reevaluating"]],
+            ["h1", None, False],
+        )
+        # The user asked for another evaluation: the review loop's markers after the hold say so.
+        again = snap({"isDraft": True, "comments": {"nodes": [
+            mark("h1", "step=hold round=1 sha=a1b2c3d", "2026-01-01T00:00:00Z"),
+            mark("p1", "step=poc round=3 sha=a1b2c3d", "2026-01-01T01:00:00Z"),
+        ]}})
+        self.assertEqual([again["markers"]["hold"], again["markers"]["reevaluating"]], ["h1", True])
+        # The merge then starts: the open comment closes the hold.
+        started = snap({"comments": {"nodes": [
+            mark("h1", "step=hold round=1 sha=a1b2c3d", "2026-01-01T00:00:00Z"),
+            mark("o1", "step=open round=1 sha=a1b2c3d mode=unreviewed", "2026-01-01T02:00:00Z"),
+        ]}})
+        self.assertEqual(
+            [started["markers"]["hold"], started["markers"]["acceptedSha"], started["markers"]["mode"]],
+            [None, "a1b2c3d", "unreviewed"],
         )
 
     def test_a_hold_comes_first_and_blocks_ready_until_the_next_open(self):

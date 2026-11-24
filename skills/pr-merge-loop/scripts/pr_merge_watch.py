@@ -484,7 +484,6 @@ def summarize_checks(checks, required_contexts=None, skip_ok=False):
             if all(c["conclusion"] == "SKIPPED" for c in checks if c["name"] == name)
             and not skip_intended(name)
         ],
-        "optionalFailed": [view(c) for c in checks if not gates(c) and c["state"] == "fail"],
     }
 
 
@@ -853,6 +852,8 @@ def timed_events(s, opts, since, now, grace_ms):
             or (
                 no_review and s["checks"]["succeeded"] == 0
                 and not s["checks"]["pending"] and not s["checks"]["failed"]
+                # An optional check still running (or failed: that is ci_failed) is CI at work, not CI missing.
+                and not s["checks"]["optional"]["pending"] and not s["checks"]["optional"]["failed"]
             )
         ),
     ):
