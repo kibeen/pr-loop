@@ -468,6 +468,12 @@ def summarize_checks(checks, required_contexts=None, skip_ok=False):
         "passed": len([c for c in gating if c["state"] in ("pass", "skip")]),
         "pending": [c["name"] for c in gating if c["state"] == "pending"],
         "failed": [view(c) for c in gating if c["state"] == "fail"],
+        # Checks the branch rules do not require. GitHub merges over them; a merge nobody reviews does not
+        # (mode=unreviewed), because there the checks are the only gate.
+        "optional": {
+            "failed": [view(c) for c in checks if not gates(c) and c["state"] == "fail"],
+            "pending": [c["name"] for c in checks if not gates(c) and c["state"] == "pending"],
+        },
         # Required by the branch rules but not reported on this commit yet (e.g. CI that needs a label or a manual start).
         "missingRequired": [n for n in required_contexts if not any(c["name"] == n for c in checks)],
         # Required, and every run of it on this commit was SKIPPED. GitHub counts that as passed and will
@@ -791,7 +797,8 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
         events.append("hold")
     if s["pr"]["mergeable"] == "CONFLICTING":
         events.append("conflict")
-    if s["checks"]["failed"]:
+    optional = s["checks"]["optional"]
+    if s["checks"]["failed"] or (no_review and optional["failed"]):
         events.append("ci_failed")
     if s["feedback"]["items"]:
         events.append("feedback")
@@ -811,8 +818,9 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
     # skipped and neutral ones) is not "every check passed".
     reviewed = (not s["review"]["changesRequested"]) if no_review else _person_approved(s)
     ran = s["checks"]["succeeded"] > 0 or not no_review
+    settled = not no_review or (not optional["failed"] and not optional["pending"])
     if (
-        no_auto and not hold and reviewed and ran and _checks_ok(s)
+        no_auto and not hold and reviewed and ran and settled and _checks_ok(s)
         and s["pr"]["mergeStateStatus"] in IMMEDIATELY_MERGEABLE
     ):
         events.append("ready")
@@ -1066,7 +1074,8 @@ def hint(s, no_auto=False, no_review=False):
     if event == "conflict":
         return "base(%s)와 충돌한다. base 를 merge 해 충돌을 푼다." % s["pr"]["base"]
     if event == "ci_failed":
-        return "머지를 막는 체크 실패: %s" % names(c["name"] for c in s["checks"]["failed"])
+        failed = list(s["checks"]["failed"]) + (s["checks"]["optional"]["failed"] if no_review else [])
+        return "머지를 막는 체크 실패: %s" % names(c["name"] for c in failed)
     if event == "feedback":
         return "리뷰어 코멘트 %d건이 답을 기다린다." % len(s["feedback"]["items"])
     if event == "behind":
@@ -1105,8 +1114,9 @@ def hint(s, no_auto=False, no_review=False):
     if event in ("timeout", "waiting"):
         review = s["review"]
         parts = []
-        if s["checks"]["pending"]:
-            parts.append("체크 진행 중: %s" % names(s["checks"]["pending"]))
+        pending = list(s["checks"]["pending"]) + (s["checks"]["optional"]["pending"] if no_review else [])
+        if pending:
+            parts.append("체크 진행 중: %s" % names(pending))
         if s["checks"]["missingRequired"]:
             parts.append("필수 체크 미보고: %s" % names(s["checks"]["missingRequired"]))
         if s["checks"]["skipped"]:

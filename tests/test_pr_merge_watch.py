@@ -893,6 +893,26 @@ class ModeTest(unittest.TestCase):
         self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
         self.assertEqual(w.timed_events(approved, {"no_auto": True}, {}, 600_000, 600_000), [])
 
+    def test_no_review_waits_for_checks_the_branch_rules_do_not_require(self):
+        """GitHub merges over a failing optional check; a merge nobody reviews must not."""
+        waived = {"no_auto": True, "no_review": True}
+        state = {"mergeStateStatus": "CLEAN", "reviewDecision": None}
+        red = snap(state, {}, [ok("Unit", required=True), bad("lint")])
+        self.assertEqual([c["name"] for c in red["checks"]["optional"]["failed"]], ["lint"])
+        self.assertEqual(red["checks"]["failed"], [])
+        self.assertEqual(w.classify(red, **waived), ["ci_failed"])
+        self.assertRegex(w.hint(with_event(red, "ci_failed"), **waived), "lint")
+        busy = snap(state, {}, [ok("Unit", required=True), running("lint")])
+        self.assertEqual(busy["checks"]["optional"]["pending"], ["lint"])
+        self.assertEqual(w.classify(busy, **waived), [])
+        self.assertRegex(w.hint(with_event(busy, "waiting"), **waived), "체크 진행 중: lint")
+        green = snap(state, {}, [ok("Unit", required=True), ok("lint")])
+        self.assertEqual(w.classify(green, **waived), ["ready"])
+        # With a reviewer the branch rules decide, as before: an optional failure does not block.
+        approved = snap(dict(state, reviewDecision="APPROVED", **approved_by("bob")), {},
+                        [ok("Unit", required=True), bad("lint")])
+        self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
+
     def test_no_review_makes_green_checks_and_a_mergeable_state_enough(self):
         waived = {"no_auto": True, "no_review": True}
         self.assertEqual(

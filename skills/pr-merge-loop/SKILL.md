@@ -51,7 +51,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/pr_merge_watch.py" wait <PR> [--repo owner/n
   `mode` 가 `auto` 인데 auto-merge 가 꺼져 있으면 `autoMerge.disabledBy` 를 본다. 없으면 켠 적이 없는 것이니 2단계부터 한다.
   있으면 누군가 끈 것이다. 다시 켜지 않고 사용자에게 보고한다.
 - 둘 다 없으면 아직 머지 진행 전이다. pr-review-loop 으로 돌아가 7단계의 4 가 찼는지 본다.
-- PR 본문(`gh pr view <PR> --json body`)의 진행 상태 절에 `머지 전 사용자 확인` 줄이 있는데 `markers.hold` 가 없으면, 사용자가 멈추라고 한 뒤
+- `markers.acceptedSha` 가 있고 PR 본문(`gh pr view <PR> --json body`)의 진행 상태 절에 `머지 전 사용자 확인` 줄이 있는데 `markers.hold` 가 없으면, 사용자가 멈추라고 한 뒤
   기록을 다 남기지 못한 것이다. 머지를 이어가지 않고 2단계의 "사용자가 머지를 멈추라고 할 때" 의 나머지(auto-merge 끄기, hold 코멘트)를 마저 한다.
 - `feedback.awaitingUser` 에 항목이 있으면 `안 고침` 답글 문안이 사용자 승인을 기다리는 중이다. 문안은 PR 에 남아 있지 않으므로
   다시 써서 보여 준다(3.2 의 5번). 마지막 반영 코멘트에 `답하지 않음(사용자 결정)` 으로 적힌 항목은 다시 묻지 않는다.
@@ -118,7 +118,8 @@ hold 코멘트는 질문을 한 줄로 적는다.
 ```
 사용자의 답을 받으면 open 코멘트를 올려 보류를 닫고 3단계로 간다.
 
-`mode=manual` 과 `mode=unreviewed` 에서는 auto-merge 를 켜지 않고 내가 유일한 관문이 된다. `manual` 의 `ready` 는 사람이
+`mode=manual` 과 `mode=unreviewed` 에서는 auto-merge 를 켜지 않고 내가 유일한 관문이 된다. `unreviewed` 는 base 가 필수로 정하지 않은
+체크(`checks.optional`)도 실패했거나 돌고 있으면 `ready` 가 오지 않는다. `manual` 의 `ready` 는 사람이
 **지금 head 를** 승인했고(`review.approvals`), 변경 요청이 없고, 모든 체크가 통과했을 때만 온다. 이전 커밋의 승인
 (`review.staleApprovals`)과 봇의 승인은 치지 않는다. `unreviewed` 의 `ready` 는 승인 없이 체크 통과만 본다.
 
