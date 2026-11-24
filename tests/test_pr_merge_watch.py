@@ -347,6 +347,17 @@ class RulesTest(unittest.TestCase):
         s = snap({}, {"viewerDefaultMergeMethod": "MERGE"}, [], rulesets)
         self.assertEqual([s["repo"]["mergeMethods"], s["repo"]["defaultMergeMethod"]], [["squash"], "squash"])
 
+    def test_a_repository_is_personal_only_when_the_gh_account_owns_it_outside_an_organization(self):
+        """SKILL.md merges an unreviewed PR on green checks only in a personal repository."""
+        mine = {"owner": {"login": ME}, "isInOrganization": False}
+        self.assertIs(snap({}, mine)["repo"]["personal"], True)
+        self.assertIs(snap({}, {"owner": {"login": "acme"}, "isInOrganization": False})["repo"]["personal"], False)
+        # An organization the account happens to share a name with is still not personal.
+        self.assertIs(snap({}, {"owner": {"login": ME}, "isInOrganization": True})["repo"]["personal"], False)
+        # Old payloads without the fields read as not personal: asking is the safe side.
+        self.assertIs(snap()["repo"]["personal"], False)
+        self.assertIn("isInOrganization owner{login}", w.QUERY)
+
     def test_rules_that_leave_no_method_allowed_offer_none(self):
         """JS read `[]` as truthy, so an empty intersection excluded every method.
 
@@ -932,6 +943,7 @@ class MarkersTest(unittest.TestCase):
         }, {}, [running("Unit Tests", required=True)])
         self.assertEqual(s["repo"]["mergeMethods"], ["merge", "squash"])
         self.assertEqual(s["repo"]["defaultMergeMethod"], "squash")
+        self.assertIs(s["repo"]["personal"], False)
         self.assertEqual(s["markers"], {
             "last": {"step": "open", "round": "1", "sha": "a1b2c3d"},
             "acceptedSha": "a1b2c3d", "mode": "auto", "hold": None, "reevaluating": False,

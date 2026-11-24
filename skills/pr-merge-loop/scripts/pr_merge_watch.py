@@ -225,6 +225,7 @@ query($owner:String!,$name:String!,$number:Int!){
   viewer{login}
   repository(owner:$owner,name:$name){
     nameWithOwner autoMergeAllowed mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod
+    isInOrganization owner{login}
     pullRequest(number:$number){
       number url title state isDraft mergeable mergeStateStatus reviewDecision
       headRefOid headRefName baseRefName isInMergeQueue mergedAt
@@ -497,7 +498,7 @@ def collect_feedback(pr, viewer):
         return login == viewer or login == pr_author
 
     # Only our own comments carry state: anyone can type a marker, and a forged `step=open`
-    # would read as the user's acceptance.
+    # would read as the procedure having cleared this PR for merge.
     markers = []
     for c in (pr.get("comments") or {}).get("nodes") or []:
         login = (c.get("author") or {}).get("login")
@@ -612,7 +613,9 @@ def collect_feedback(pr, viewer):
 def summarize_markers(markers):
     """Where the procedure stands, read from our marker comments.
 
-    - `step=open` records the user's acceptance (its sha is the accepted commit) and the merge mode.
+    - `step=open` records that the merge procedure started (review self-approve, CI and the evaluation
+      criteria were met, or the user told us to merge). Its sha is the commit that was cleared, still
+      reported as `acceptedSha`, and it carries the merge mode.
     - `step=hold` records a question waiting for the user; the next `step=open` closes it.
     """
     last = markers[-1] if markers else None
@@ -914,6 +917,12 @@ def build_snapshot(data, rulesets=None, extra_contexts=None, skip_ok=False):
         "pr": pr_view,
         "repo": {
             "nameWithOwner": repo.get("nameWithOwner"),
+            # The account running gh owns this repository and it is not an organization's: there is
+            # nobody else to review. SKILL.md merges such a PR on green checks instead of asking.
+            "personal": bool(
+                viewer and not repo.get("isInOrganization")
+                and (repo.get("owner") or {}).get("login") == viewer
+            ),
             "mergeMethods": methods,
             "defaultMergeMethod": preferred if preferred in methods else (methods[0] if methods else None),
         },
@@ -1025,7 +1034,7 @@ def hint(s, no_auto=False, no_review=False):
             " auto-merge 가 켜져 있다: 먼저 끈다(gh pr merge --disable-auto)." if s["autoMerge"]["enabled"] else "",
         )
     if event == "draft":
-        return "아직 draft 다. 사용자가 채택한 뒤 gh pr ready 로 연다."
+        return "아직 draft 다. pr-review-loop 의 머지 진행 조건이 찬 뒤 gh pr ready 로 연다."
     if event == "conflict":
         return "base(%s)와 충돌한다. base 를 merge 해 충돌을 푼다." % s["pr"]["base"]
     if event == "ci_failed":
