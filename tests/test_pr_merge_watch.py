@@ -347,6 +347,17 @@ class RulesTest(unittest.TestCase):
         s = snap({}, {"viewerDefaultMergeMethod": "MERGE"}, [], rulesets)
         self.assertEqual([s["repo"]["mergeMethods"], s["repo"]["defaultMergeMethod"]], [["squash"], "squash"])
 
+    def test_a_repository_is_personal_only_when_the_gh_account_owns_it_outside_an_organization(self):
+        """SKILL.md merges an unreviewed PR on green checks only in a personal repository."""
+        mine = {"owner": {"login": ME}, "isInOrganization": False}
+        self.assertIs(snap({}, mine)["repo"]["personal"], True)
+        self.assertIs(snap({}, {"owner": {"login": "acme"}, "isInOrganization": False})["repo"]["personal"], False)
+        # An organization the account happens to share a name with is still not personal.
+        self.assertIs(snap({}, {"owner": {"login": ME}, "isInOrganization": True})["repo"]["personal"], False)
+        # Old payloads without the fields read as not personal: asking is the safe side.
+        self.assertIs(snap()["repo"]["personal"], False)
+        self.assertIn("isInOrganization owner{login}", w.QUERY)
+
     def test_rules_that_leave_no_method_allowed_offer_none(self):
         """JS read `[]` as truthy, so an empty intersection excluded every method.
 
@@ -846,6 +857,62 @@ class ModeTest(unittest.TestCase):
         # auto-merge is not expected in this mode, so its absence is not an event
         self.assertNotIn("auto_merge_off", w.classify(snap({}), no_auto=True))
 
+    def test_no_review_with_no_check_at_all_is_not_ready_and_asks_for_ci(self):
+        """With no reviewer the checks are the only gate: zero checks must not read as all passed."""
+        waived = {"no_auto": True, "no_review": True}
+        bare = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {}, [])
+        self.assertEqual(bare["checks"]["total"], 0)
+        self.assertEqual(w.classify(bare, **waived), [])
+        since = {}
+        self.assertEqual(w.timed_events(bare, waived, since, 0, 600_000), [])
+        self.assertEqual(w.timed_events(bare, waived, since, 600_000, 600_000), ["ci_not_started"])
+        self.assertRegex(w.hint(with_event(bare, "ci_not_started"), **waived), "통과한 체크가 하나도 없다")
+        # A check that only skipped (or ended neutral) ran nothing either.
+        for conclusion in ("SKIPPED", "NEUTRAL"):
+            idle = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {},
+                        [check_run("Unit Tests", "COMPLETED", conclusion)])
+            self.assertEqual([idle["checks"]["total"], idle["checks"]["succeeded"]], [1, 0], conclusion)
+            self.assertEqual(w.classify(idle, **waived), [], conclusion)
+            self.assertEqual(w.timed_events(idle, waived, {"ci_not_started": 0}, 600_000, 600_000),
+                             ["ci_not_started"], conclusion)
+            self.assertRegex(w.hint(with_event(idle, "ci_not_started"), **waived), "통과한 체크가 하나도 없다")
+        # One real pass next to a skip is enough.
+        mixed = snap({"mergeStateStatus": "CLEAN", "reviewDecision": None}, {},
+                     [check_run("Docs", "COMPLETED", "SKIPPED"), ok("lint")])
+        self.assertEqual(w.classify(mixed, **waived), ["ready"])
+        # A check still running is a wait, not a missing CI.
+        pending = snap({"mergeStateStatus": "UNSTABLE", "reviewDecision": None}, {}, [running("lint")])
+        self.assertEqual(w.timed_events(pending, waived, {"ci_not_started": 0}, 600_000, 600_000), [])
+        # In the other modes a required check that never reported keeps its own hint with the check's name.
+        missing = snap({}, {}, [], [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "Unit Tests"}]}}])
+        self.assertRegex(w.hint(with_event(missing, "ci_not_started")), "필수 체크가 돌지 않았다: Unit Tests")
+        self.assertRegex(w.hint(with_event(missing, "ci_not_started"), **waived), "필수 체크가 돌지 않았다: Unit Tests")
+        # A person approved the head: zero checks is that reviewer's call, as before.
+        approved = snap(dict({"mergeStateStatus": "CLEAN", "reviewDecision": None}, **approved_by("bob")), {}, [])
+        self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
+        self.assertEqual(w.timed_events(approved, {"no_auto": True}, {}, 600_000, 600_000), [])
+
+    def test_no_review_waits_for_checks_the_branch_rules_do_not_require(self):
+        """GitHub merges over a failing optional check; a merge nobody reviews must not."""
+        waived = {"no_auto": True, "no_review": True}
+        state = {"mergeStateStatus": "CLEAN", "reviewDecision": None}
+        red = snap(state, {}, [ok("Unit", required=True), bad("lint")])
+        self.assertEqual([c["name"] for c in red["checks"]["optional"]["failed"]], ["lint"])
+        self.assertEqual(red["checks"]["failed"], [])
+        self.assertEqual(w.classify(red, **waived), ["ci_failed"])
+        self.assertRegex(w.hint(with_event(red, "ci_failed"), **waived), "lint")
+        busy = snap(state, {}, [ok("Unit", required=True), running("lint")])
+        self.assertEqual(busy["checks"]["optional"]["pending"], ["lint"])
+        self.assertEqual(w.classify(busy, **waived), [])
+        self.assertRegex(w.hint(with_event(busy, "waiting"), **waived), "체크 진행 중: lint")
+        green = snap(state, {}, [ok("Unit", required=True), ok("lint")])
+        self.assertEqual(w.classify(green, **waived), ["ready"])
+        # With a reviewer the branch rules decide, as before: an optional failure does not block.
+        approved = snap(dict(state, reviewDecision="APPROVED", **approved_by("bob")), {},
+                        [ok("Unit", required=True), bad("lint")])
+        self.assertEqual(w.classify(approved, no_auto=True), ["ready"])
+
     def test_no_review_makes_green_checks_and_a_mergeable_state_enough(self):
         waived = {"no_auto": True, "no_review": True}
         self.assertEqual(
@@ -932,12 +999,22 @@ class MarkersTest(unittest.TestCase):
         }, {}, [running("Unit Tests", required=True)])
         self.assertEqual(s["repo"]["mergeMethods"], ["merge", "squash"])
         self.assertEqual(s["repo"]["defaultMergeMethod"], "squash")
+        self.assertIs(s["repo"]["personal"], False)
         self.assertEqual(s["markers"], {
             "last": {"step": "open", "round": "1", "sha": "a1b2c3d"},
             "acceptedSha": "a1b2c3d", "mode": "auto", "hold": None, "reevaluating": False,
             "next": {"open": 2, "hold": 1, "ci": 1, "feedback": 1},
         })
         self.assertEqual(s["review"]["requested"], ["jane", "core"])
+        self.assertEqual(s["review"]["requestedPeople"], ["jane", "core"])
+        bots = snap({"reviewRequests": {"nodes": [
+            {"requestedReviewer": {"__typename": "Bot", "login": "review-bot"}},
+            {"requestedReviewer": {"__typename": "User", "login": "jane"}},
+        ]}})
+        self.assertEqual(
+            [bots["review"]["requested"], bots["review"]["requestedPeople"]],
+            [["review-bot", "jane"], ["jane"]],
+        )
         self.assertRegex(
             w.hint(with_event(s, "waiting")),
             r"체크 진행 중: Unit Tests / 리뷰 승인 대기 \(요청: jane, core\)",

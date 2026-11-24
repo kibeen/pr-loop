@@ -7,8 +7,9 @@
 
 --no-auto: the agent merges by itself once a person approved the head (no auto-merge). It is
   implied when the PR's last `step=open` marker says `mode=manual`.
---no-review: as --no-auto, but the user waived the review: ready once every check passed.
-  Implied by `mode=unreviewed`.
+--no-review: as --no-auto, but nobody reviews (the account's own personal repository, or the user
+  waived the review): ready once every check passed, and at least one check ran. Implied by
+  `mode=unreviewed`.
 --skip-ok[=check,...]: a required check that only ever SKIPPED is what this repository intends
   (e.g. a path filter), not CI that failed to start. Without names it applies to every check.
 
@@ -225,6 +226,7 @@ query($owner:String!,$name:String!,$number:Int!){
   viewer{login}
   repository(owner:$owner,name:$name){
     nameWithOwner autoMergeAllowed mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod
+    isInOrganization owner{login}
     pullRequest(number:$number){
       number url title state isDraft mergeable mergeStateStatus reviewDecision
       headRefOid headRefName baseRefName isInMergeQueue mergedAt
@@ -461,9 +463,17 @@ def summarize_checks(checks, required_contexts=None, skip_ok=False):
     return {
         "gating": "required" if any_required else "all",
         "total": len(checks),
+        # Checks that actually ran and passed (a skipped or neutral check did not run anything).
+        "succeeded": len([c for c in checks if c["state"] == "pass"]),
         "passed": len([c for c in gating if c["state"] in ("pass", "skip")]),
         "pending": [c["name"] for c in gating if c["state"] == "pending"],
         "failed": [view(c) for c in gating if c["state"] == "fail"],
+        # Checks the branch rules do not require. GitHub merges over them; a merge nobody reviews does not
+        # (mode=unreviewed), because there the checks are the only gate.
+        "optional": {
+            "failed": [view(c) for c in checks if not gates(c) and c["state"] == "fail"],
+            "pending": [c["name"] for c in checks if not gates(c) and c["state"] == "pending"],
+        },
         # Required by the branch rules but not reported on this commit yet (e.g. CI that needs a label or a manual start).
         "missingRequired": [n for n in required_contexts if not any(c["name"] == n for c in checks)],
         # Required, and every run of it on this commit was SKIPPED. GitHub counts that as passed and will
@@ -497,7 +507,7 @@ def collect_feedback(pr, viewer):
         return login == viewer or login == pr_author
 
     # Only our own comments carry state: anyone can type a marker, and a forged `step=open`
-    # would read as the user's acceptance.
+    # would read as the procedure having cleared this PR for merge.
     markers = []
     for c in (pr.get("comments") or {}).get("nodes") or []:
         login = (c.get("author") or {}).get("login")
@@ -612,7 +622,9 @@ def collect_feedback(pr, viewer):
 def summarize_markers(markers):
     """Where the procedure stands, read from our marker comments.
 
-    - `step=open` records the user's acceptance (its sha is the accepted commit) and the merge mode.
+    - `step=open` records that the merge procedure started (review self-approve, CI and the evaluation
+      criteria were met, or the user told us to merge). Its sha is the commit that was cleared, still
+      reported as `acceptedSha`, and it carries the merge mode.
     - `step=hold` records a question waiting for the user; the next `step=open` closes it.
     """
     last = markers[-1] if markers else None
@@ -643,7 +655,8 @@ def summarize_markers(markers):
         "last": last_view,
         "acceptedSha": (opened or {}).get("sha") or None,
         # auto: GitHub merges. manual: the agent merges after a person approved the head and checks passed.
-        # unreviewed: the user chose to merge without a review; the agent merges once checks passed.
+        # unreviewed: nobody reviews (a personal repository, or the user waived it); the agent merges once
+        # checks passed.
         "mode": mode,
         "hold": gate.get("url") if gate and gate.get("step") == "hold" else None,
         # The hold asked whether to re-evaluate and the review loop has run since (its CI comments may come last).
@@ -784,7 +797,8 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
         events.append("hold")
     if s["pr"]["mergeable"] == "CONFLICTING":
         events.append("conflict")
-    if s["checks"]["failed"]:
+    optional = s["checks"]["optional"]
+    if s["checks"]["failed"] or (no_review and optional["failed"]):
         events.append("ci_failed")
     if s["feedback"]["items"]:
         events.append("feedback")
@@ -798,11 +812,15 @@ def classify(s, expect_auto=False, no_auto=False, no_review=False):
         and s["autoMerge"]["effect"] in UNSAFE_EFFECTS
     ):
         events.append("auto_merge_unsafe")
-    # Without auto-merge the agent is the only gate: a person approved this head (unless the user
-    # waived the review), every check passed, and GitHub calls the PR mergeable.
+    # Without auto-merge the agent is the only gate: a person approved this head (unless nobody
+    # reviews), every check passed, and GitHub calls the PR mergeable. With no reviewer the checks are
+    # all that stands between the branch and the merge, so "no check passed" (none attached, or only
+    # skipped and neutral ones) is not "every check passed".
     reviewed = (not s["review"]["changesRequested"]) if no_review else _person_approved(s)
+    ran = s["checks"]["succeeded"] > 0 or not no_review
+    settled = not no_review or (not optional["failed"] and not optional["pending"])
     if (
-        no_auto and not hold and reviewed and _checks_ok(s)
+        no_auto and not hold and reviewed and ran and settled and _checks_ok(s)
         and s["pr"]["mergeStateStatus"] in IMMEDIATELY_MERGEABLE
     ):
         events.append("ready")
@@ -815,6 +833,7 @@ def timed_events(s, opts, since, now, grace_ms):
     `since` carries the first time each condition was seen across polls.
     """
     no_auto = (opts or {}).get("no_auto", False)
+    no_review = (opts or {}).get("no_review", False)
 
     def held(name, active):
         if not active:
@@ -827,7 +846,15 @@ def timed_events(s, opts, since, now, grace_ms):
     events = []
     if held(
         "ci_not_started",
-        open_pr and (len(s["checks"]["missingRequired"]) > 0 or len(s["checks"]["skipped"]) > 0),
+        open_pr and (
+            len(s["checks"]["missingRequired"]) > 0 or len(s["checks"]["skipped"]) > 0
+            # mode=unreviewed and nothing ran: no check attached, or only skipped and neutral ones.
+            # Nothing would ever make the PR ready.
+            or (
+                no_review and s["checks"]["succeeded"] == 0
+                and not s["checks"]["pending"] and not s["checks"]["failed"]
+            )
+        ),
     ):
         events.append("ci_not_started")
     # Everything we can see is green and auto-merge is on, yet GitHub has not merged (a merge queue is a normal wait).
@@ -914,6 +941,12 @@ def build_snapshot(data, rulesets=None, extra_contexts=None, skip_ok=False):
         "pr": pr_view,
         "repo": {
             "nameWithOwner": repo.get("nameWithOwner"),
+            # The account running gh owns this repository and it is not an organization's: there is
+            # nobody else to review. SKILL.md merges such a PR on green checks instead of asking.
+            "personal": bool(
+                viewer and not repo.get("isInOrganization")
+                and (repo.get("owner") or {}).get("login") == viewer
+            ),
             "mergeMethods": methods,
             "defaultMergeMethod": preferred if preferred in methods else (methods[0] if methods else None),
         },
@@ -947,6 +980,18 @@ def build_snapshot(data, rulesets=None, extra_contexts=None, skip_ok=False):
                     or (n.get("requestedReviewer") or {}).get("slug")
                     for n in ((pr.get("reviewRequests") or {}).get("nodes") or [])
                 ) if login
+            ],
+            # The same without bots: a bot's approval never makes a manual merge ready, so a PR that
+            # only a bot was asked to review has nobody to wait for.
+            "requestedPeople": [
+                login for kind, login in (
+                    (
+                        (n.get("requestedReviewer") or {}).get("__typename"),
+                        (n.get("requestedReviewer") or {}).get("login")
+                        or (n.get("requestedReviewer") or {}).get("slug"),
+                    )
+                    for n in ((pr.get("reviewRequests") or {}).get("nodes") or [])
+                ) if login and kind != "Bot"
             ],
             "unresolvedThreads": len([t for t in threads if not t.get("isResolved")]),
         },
@@ -1025,11 +1070,12 @@ def hint(s, no_auto=False, no_review=False):
             " auto-merge 가 켜져 있다: 먼저 끈다(gh pr merge --disable-auto)." if s["autoMerge"]["enabled"] else "",
         )
     if event == "draft":
-        return "아직 draft 다. 사용자가 채택한 뒤 gh pr ready 로 연다."
+        return "아직 draft 다. pr-review-loop 의 머지 진행 조건이 찬 뒤 gh pr ready 로 연다."
     if event == "conflict":
         return "base(%s)와 충돌한다. base 를 merge 해 충돌을 푼다." % s["pr"]["base"]
     if event == "ci_failed":
-        return "머지를 막는 체크 실패: %s" % names(c["name"] for c in s["checks"]["failed"])
+        failed = list(s["checks"]["failed"]) + (s["checks"]["optional"]["failed"] if no_review else [])
+        return "머지를 막는 체크 실패: %s" % names(c["name"] for c in failed)
     if event == "feedback":
         return "리뷰어 코멘트 %d건이 답을 기다린다." % len(s["feedback"]["items"])
     if event == "behind":
@@ -1049,6 +1095,14 @@ def hint(s, no_auto=False, no_review=False):
         return "%s 모두 찼다. auto-merge 없이 감시 중이므로 직접 머지할 차례다." % (
             "체크가" if no_review else "승인과 체크가"
         )
+    if (
+        event == "ci_not_started" and no_review and not s["checks"]["succeeded"]
+        and not s["checks"]["missingRequired"] and not s["checks"]["skipped"]
+    ):
+        return (
+            "이 커밋에서 실제로 돌아 통과한 체크가 하나도 없다 (붙은 체크 %d건). 리뷰 없이 머지하는 PR 은 "
+            "체크가 돌아야 머지한다: 레포의 CI 실행 규칙을 확인한다." % s["checks"]["total"]
+        )
     if event == "ci_not_started":
         return "필수 체크가 돌지 않았다: %s. 레포의 CI 실행 규칙(라벨, 수동 실행)을 확인한다." % names(
             list(s["checks"]["missingRequired"]) + list(s["checks"]["skipped"])
@@ -1060,8 +1114,9 @@ def hint(s, no_auto=False, no_review=False):
     if event in ("timeout", "waiting"):
         review = s["review"]
         parts = []
-        if s["checks"]["pending"]:
-            parts.append("체크 진행 중: %s" % names(s["checks"]["pending"]))
+        pending = list(s["checks"]["pending"]) + (s["checks"]["optional"]["pending"] if no_review else [])
+        if pending:
+            parts.append("체크 진행 중: %s" % names(pending))
         if s["checks"]["missingRequired"]:
             parts.append("필수 체크 미보고: %s" % names(s["checks"]["missingRequired"]))
         if s["checks"]["skipped"]:
