@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,9 +17,15 @@ HOOK = ROOT / "hooks" / "research_nudge.py"
 HOOKS_JSON = ROOT / "hooks" / "hooks.json"
 
 
-def run(stdin: str) -> subprocess.CompletedProcess:
+def run(stdin: str, encoding: str | None = None) -> subprocess.CompletedProcess:
+    """Run the hook. `encoding` forces the interpreter's stdio encoding, the way a
+    Windows console code page does."""
+    env = dict(os.environ)
+    env.pop("PYTHONUTF8", None)
+    if encoding:
+        env["PYTHONIOENCODING"] = encoding
     return subprocess.run([sys.executable, str(HOOK)], input=stdin.encode("utf-8"),
-                          capture_output=True, timeout=30)
+                          capture_output=True, timeout=30, env=env)
 
 
 def skill_event(name) -> str:
@@ -28,8 +35,8 @@ def skill_event(name) -> str:
 
 
 class ResearchNudgeTest(unittest.TestCase):
-    def context_for(self, skill: str) -> str:
-        r = run(skill_event(skill))
+    def context_for(self, skill: str, encoding: str | None = None) -> str:
+        r = run(skill_event(skill), encoding)
         self.assertEqual(r.returncode, 0, r.stderr)
         out = json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]
         self.assertEqual(out["hookEventName"], "PostToolUse")
@@ -37,7 +44,7 @@ class ResearchNudgeTest(unittest.TestCase):
 
     def test_brainstorming_is_told_to_research_before_the_approaches(self):
         text = self.context_for("superpowers:brainstorming")
-        self.assertIn("seekflow:prior-art-research", text)
+        self.assertIn("`prior-art-research`", text)
         self.assertIn("접근법을 제시하기 전에", text)
 
     def test_debugging_is_told_to_search_public_issues(self):
@@ -49,9 +56,27 @@ class ResearchNudgeTest(unittest.TestCase):
             text = self.context_for(skill)
             self.assertTrue("비공개" in text or "prior-art-research" in text, skill)
 
+    def test_a_legacy_code_page_cannot_break_the_output(self):
+        """Windows consoles often run cp1252, which cannot encode the Korean text.
+        The hook crashed there, and the `|| python3` fallback then read an empty
+        stdin and printed nothing, so the instruction was lost without an error."""
+        for encoding in ("cp1252", "ascii"):
+            text = self.context_for("superpowers:brainstorming", encoding)
+            self.assertIn("접근법을 제시하기 전에", text, encoding)
+
+    def test_non_ascii_input_is_read(self):
+        event = json.loads(skill_event("superpowers:systematic-debugging"))
+        event["tool_response"] = {"note": "한글 출력과 ✓"}
+        for encoding in (None, "cp1252"):
+            r = run(json.dumps(event, ensure_ascii=False), encoding)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(b"additionalContext", r.stdout)
+
     def test_other_skills_get_nothing(self):
         for stdin in (skill_event("superpowers:writing-plans"), skill_event(None),
-                      json.dumps({"tool_name": "Skill"}), "null", "[]"):
+                      json.dumps({"tool_name": "Skill"}), "null", "[]", '"text"',
+                      json.dumps({"tool_input": "superpowers:brainstorming"}),
+                      json.dumps({"tool_input": {"skill": ["superpowers:brainstorming"]}})):
             r = run(stdin)
             self.assertEqual((r.returncode, r.stdout), (0, b""), stdin)
 
@@ -60,14 +85,23 @@ class ResearchNudgeTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, b""))
 
     def test_the_skill_the_nudge_names_exists(self):
-        named = set(re.findall(r"seekflow:([\w-]+)", HOOK.read_text(encoding="utf-8")))
+        named = set(re.findall(r"스킬 `([\w-]+)`", HOOK.read_text(encoding="utf-8")))
         self.assertTrue(named)
         for name in named:
             self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file(), name)
 
-    def test_the_plugin_is_named_as_the_nudge_says(self):
-        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
-        self.assertEqual(plugin["name"], "seekflow")
+    def test_the_nudge_names_no_plugin_namespace(self):
+        """The namespace follows the installed plugin's name, which can differ from
+        plugin.json while a marketplace entry is being renamed."""
+        for nudge in self.hook_module().NUDGES.values():
+            self.assertIsNone(re.search(r"`[\w-]+:[\w-]+`", nudge), nudge)
+
+    def hook_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("research_nudge", HOOK)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def test_hooks_json_runs_this_script_after_the_skill_tool(self):
         hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
