@@ -21,18 +21,28 @@ import json
 import sys
 
 NUDGES = {
-    "superpowers:brainstorming": (
+    "brainstorming": (
         "이 설계가 새 소프트웨어 기능, 알고리즘, 구조에 관한 것이면 접근법을 제시하기 전에 "
         "스킬 `prior-art-research` 로 선행 조사(대표 시스템의 설계, 관련 논문, 비교 평가)를 하고 "
         "그 결과로 후보를 만든다. 이 대화에서 이미 조사했으면 그 결과를 쓴다. "
         "소프트웨어 설계가 아니거나 버그 수정, 문서, 설정 변경이면 건너뛴다."
     ),
-    "superpowers:systematic-debugging": (
+    "systematic-debugging": (
         "원인이 외부 라이브러리, 프레임워크, 도구의 동작일 수 있으면 가설을 세우기 전에 "
         "오류 문구와 버전으로 공개 이슈, 릴리스 노트, 문서를 검색한다. "
         "검색어에는 비공개 코드, 경로, 내부 이름을 넣지 않는다."
     ),
 }
+
+
+def nudge_key(skill: str | None) -> str | None:
+    """The superpowers skill a loaded name refers to: `superpowers:brainstorming`,
+    or the bare `brainstorming` the model may also call it by. A same-named skill of
+    another plugin is not superpowers' and gets nothing."""
+    if not skill:
+        return None
+    plugin, _, name = skill.rpartition(":")
+    return name if plugin in ("", "superpowers") else None
 
 
 def skill_of(event: object) -> str | None:
@@ -51,7 +61,7 @@ def main() -> int:
         event = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     except ValueError:
         return 0
-    nudge = NUDGES.get(skill_of(event))
+    nudge = NUDGES.get(nudge_key(skill_of(event)))
     if nudge:
         out = {"hookSpecificOutput": {"hookEventName": "PostToolUse",
                                       "additionalContext": nudge}}

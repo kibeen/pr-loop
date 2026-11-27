@@ -51,10 +51,20 @@ class ResearchNudgeTest(unittest.TestCase):
         text = self.context_for("superpowers:systematic-debugging")
         self.assertIn("공개 이슈", text)
 
-    def test_every_nudge_keeps_private_names_out_of_queries(self):
-        for skill in ("superpowers:brainstorming", "superpowers:systematic-debugging"):
-            text = self.context_for(skill)
-            self.assertTrue("비공개" in text or "prior-art-research" in text, skill)
+    def test_searches_are_told_to_keep_private_names_out(self):
+        """The debugging nudge says it itself; the design nudge hands over to the
+        skill, whose first step says it."""
+        self.assertIn("비공개", self.context_for("superpowers:systematic-debugging"))
+        skill = (ROOT / "skills" / "prior-art-research" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("검색어에는 공개된 기술 개념만 쓴다", skill)
+
+    def test_the_bare_skill_name_gets_the_same_nudge(self):
+        for name in ("brainstorming", "systematic-debugging"):
+            self.assertEqual(self.context_for(name), self.context_for("superpowers:" + name))
+
+    def test_a_same_named_skill_of_another_plugin_gets_nothing(self):
+        r = run(skill_event("other-plugin:brainstorming"))
+        self.assertEqual((r.returncode, r.stdout), (0, b""))
 
     def test_a_legacy_code_page_cannot_break_the_output(self):
         """Windows consoles often run cp1252, which cannot encode the Korean text.
@@ -73,7 +83,7 @@ class ResearchNudgeTest(unittest.TestCase):
             self.assertIn(b"additionalContext", r.stdout)
 
     def test_other_skills_get_nothing(self):
-        for stdin in (skill_event("superpowers:writing-plans"), skill_event(None),
+        for stdin in (skill_event("superpowers:writing-plans"), skill_event(None), skill_event(""),
                       json.dumps({"tool_name": "Skill"}), "null", "[]", '"text"',
                       json.dumps({"tool_input": "superpowers:brainstorming"}),
                       json.dumps({"tool_input": {"skill": ["superpowers:brainstorming"]}})):
