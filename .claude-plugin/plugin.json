@@ -1,12 +1,15 @@
 {
-  "name": "pr-loop",
-  "description": "구현 PR 을 draft 리뷰부터 머지까지 끌고 가는 절차. 스킬 pr-review-loop, pr-merge-loop 와 리뷰 서브에이전트 pr-reviewer.",
+  "name": "seekflow",
+  "description": "설계 전에 대표 시스템과 논문을 조사해 더 나은 설계를 찾고, 구현 PR 을 draft 리뷰부터 머지까지 끌고 가는 절차. 스킬 prior-art-research, pr-review-loop, pr-merge-loop 와 리뷰 서브에이전트 pr-reviewer.",
   "author": {
     "name": "Jung Kibeen"
   },
-  "homepage": "https://github.com/kibeen/pr-loop",
-  "repository": "https://github.com/kibeen/pr-loop",
+  "homepage": "https://github.com/kibeen/seekflow",
+  "repository": "https://github.com/kibeen/seekflow",
   "keywords": [
+    "design",
+    "prior-art",
+    "research",
     "pull-request",
     "code-review",
     "ci",
